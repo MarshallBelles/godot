@@ -1,32 +1,32 @@
-/*************************************************************************/
-/*  audio_stream.cpp                                                     */
-/*************************************************************************/
-/*                       This file is part of:                           */
-/*                           GODOT ENGINE                                */
-/*                      https://godotengine.org                          */
-/*************************************************************************/
-/* Copyright (c) 2007-2022 Juan Linietsky, Ariel Manzur.                 */
-/* Copyright (c) 2014-2022 Godot Engine contributors (cf. AUTHORS.md).   */
-/*                                                                       */
-/* Permission is hereby granted, free of charge, to any person obtaining */
-/* a copy of this software and associated documentation files (the       */
-/* "Software"), to deal in the Software without restriction, including   */
-/* without limitation the rights to use, copy, modify, merge, publish,   */
-/* distribute, sublicense, and/or sell copies of the Software, and to    */
-/* permit persons to whom the Software is furnished to do so, subject to */
-/* the following conditions:                                             */
-/*                                                                       */
-/* The above copyright notice and this permission notice shall be        */
-/* included in all copies or substantial portions of the Software.       */
-/*                                                                       */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,       */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF    */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.*/
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY  */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,  */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE     */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
-/*************************************************************************/
+/**************************************************************************/
+/*  audio_stream.cpp                                                      */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
 #include "audio_stream.h"
 
@@ -71,12 +71,9 @@ void AudioStreamPlayback::seek(double p_time) {
 }
 
 int AudioStreamPlayback::mix(AudioFrame *p_buffer, float p_rate_scale, int p_frames) {
-	int ret;
-	if (GDVIRTUAL_REQUIRED_CALL(_mix, p_buffer, p_rate_scale, p_frames, ret)) {
-		return ret;
-	}
-
-	return 0;
+	int ret = 0;
+	GDVIRTUAL_REQUIRED_CALL(_mix, p_buffer, p_rate_scale, p_frames, ret);
+	return ret;
 }
 
 void AudioStreamPlayback::tag_used_streams() {
@@ -107,20 +104,14 @@ void AudioStreamPlaybackResampled::begin_resample() {
 }
 
 int AudioStreamPlaybackResampled::_mix_internal(AudioFrame *p_buffer, int p_frames) {
-	int ret;
-	if (GDVIRTUAL_REQUIRED_CALL(_mix_resampled, p_buffer, p_frames, ret)) {
-		return ret;
-	}
-
-	return 0;
+	int ret = 0;
+	GDVIRTUAL_REQUIRED_CALL(_mix_resampled, p_buffer, p_frames, ret);
+	return ret;
 }
 float AudioStreamPlaybackResampled::get_stream_sampling_rate() {
-	float ret;
-	if (GDVIRTUAL_REQUIRED_CALL(_get_stream_sampling_rate, ret)) {
-		return ret;
-	}
-
-	return 0;
+	float ret = 0;
+	GDVIRTUAL_REQUIRED_CALL(_get_stream_sampling_rate, ret);
+	return ret;
 }
 
 void AudioStreamPlaybackResampled::_bind_methods() {
@@ -370,13 +361,13 @@ void AudioStreamPlaybackMicrophone::start(double p_from_pos) {
 	}
 
 	if (!GLOBAL_GET("audio/driver/enable_input")) {
-		WARN_PRINT("Need to enable Project settings > Audio > Enable Audio Input option to use capturing.");
+		WARN_PRINT("You must enable the project setting \"audio/driver/enable_input\" to use audio capture.");
 		return;
 	}
 
 	input_ofs = 0;
 
-	if (AudioDriver::get_singleton()->capture_start() == OK) {
+	if (AudioDriver::get_singleton()->input_start() == OK) {
 		active = true;
 		begin_resample();
 	}
@@ -384,7 +375,7 @@ void AudioStreamPlaybackMicrophone::start(double p_from_pos) {
 
 void AudioStreamPlaybackMicrophone::stop() {
 	if (active) {
-		AudioDriver::get_singleton()->capture_stop();
+		AudioDriver::get_singleton()->input_stop();
 		active = false;
 	}
 }
@@ -419,12 +410,12 @@ AudioStreamPlaybackMicrophone::AudioStreamPlaybackMicrophone() {
 
 ////////////////////////////////
 
-void AudioStreamRandomizer::add_stream(int p_index) {
+void AudioStreamRandomizer::add_stream(int p_index, Ref<AudioStream> p_stream, float p_weight) {
 	if (p_index < 0) {
 		p_index = audio_stream_pool.size();
 	}
 	ERR_FAIL_COND(p_index > audio_stream_pool.size());
-	PoolEntry entry{ nullptr, 1.0f };
+	PoolEntry entry{ p_stream, p_weight };
 	audio_stream_pool.insert(p_index, entry);
 	emit_signal(SNAME("changed"));
 	notify_property_list_changed();
@@ -564,8 +555,9 @@ Ref<AudioStreamPlayback> AudioStreamRandomizer::instance_playback_no_repeats() {
 		}
 	}
 	if (local_pool.is_empty()) {
+		// There is only one sound to choose from.
+		// Always play a random sound while allowing repeats (which always plays the same sound).
 		playback = instance_playback_random();
-		WARN_PRINT("Playback stream pool is too small to prevent repeats.");
 		return playback;
 	}
 
@@ -717,7 +709,7 @@ void AudioStreamRandomizer::_get_property_list(List<PropertyInfo> *p_list) const
 }
 
 void AudioStreamRandomizer::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("add_stream", "index"), &AudioStreamRandomizer::add_stream);
+	ClassDB::bind_method(D_METHOD("add_stream", "index", "stream", "weight"), &AudioStreamRandomizer::add_stream, DEFVAL(1.0));
 	ClassDB::bind_method(D_METHOD("move_stream", "index_from", "index_to"), &AudioStreamRandomizer::move_stream);
 	ClassDB::bind_method(D_METHOD("remove_stream", "index"), &AudioStreamRandomizer::remove_stream);
 
@@ -738,11 +730,11 @@ void AudioStreamRandomizer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_playback_mode", "mode"), &AudioStreamRandomizer::set_playback_mode);
 	ClassDB::bind_method(D_METHOD("get_playback_mode"), &AudioStreamRandomizer::get_playback_mode);
 
-	ADD_ARRAY("streams", "stream_");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "streams_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_streams_count", "get_streams_count");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "playback_mode", PROPERTY_HINT_ENUM, "Random (Avoid Repeats),Random,Sequential"), "set_playback_mode", "get_playback_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "random_pitch", PROPERTY_HINT_RANGE, "1,16,0.01"), "set_random_pitch", "get_random_pitch");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "random_volume_offset_db", PROPERTY_HINT_RANGE, "0,40,0.01,suffix:dB"), "set_random_volume_offset_db", "get_random_volume_offset_db");
+	ADD_ARRAY("streams", "stream_");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "streams_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_streams_count", "get_streams_count");
 
 	BIND_ENUM_CONSTANT(PLAYBACK_RANDOM_NO_REPEATS);
 	BIND_ENUM_CONSTANT(PLAYBACK_RANDOM);

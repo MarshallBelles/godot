@@ -127,7 +127,7 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 		 * @ignore
 		 * @type {Array.<string>}
 		 */
-		gdnativeLibs: [],
+		gdextensionLibs: [],
 		/**
 		 * @ignore
 		 * @type {Array.<string>}
@@ -257,7 +257,7 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 		this.experimentalVK = parse('experimentalVK', this.experimentalVK);
 		this.focusCanvas = parse('focusCanvas', this.focusCanvas);
 		this.serviceWorker = parse('serviceWorker', this.serviceWorker);
-		this.gdnativeLibs = parse('gdnativeLibs', this.gdnativeLibs);
+		this.gdextensionLibs = parse('gdextensionLibs', this.gdextensionLibs);
 		this.fileSizes = parse('fileSizes', this.fileSizes);
 		this.args = parse('args', this.args);
 		this.onExecute = parse('onExecute', this.onExecute);
@@ -292,7 +292,9 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 				return {};
 			},
 			'locateFile': function (path) {
-				if (path.endsWith('.worker.js')) {
+				if (!path.startsWith('godot.')) {
+					return path;
+				} else if (path.endsWith('.worker.js')) {
 					return `${loadPath}.worker.js`;
 				} else if (path.endsWith('.audio.worklet.js')) {
 					return `${loadPath}.audio.worklet.js`;

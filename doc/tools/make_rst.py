@@ -27,8 +27,15 @@ MARKUP_ALLOWED_SUBSEQUENT = " -.,:;!?\\/'\")]}>"
 # Used to translate section headings and other hardcoded strings when required with
 # the --lang argument. The BASE_STRINGS list should be synced with what we actually
 # write in this script (check `translate()` uses), and also hardcoded in
-# `doc/translations/extract.py` to include them in the source POT file.
+# `scripts/extract_classes.py` (godotengine/godot-editor-l10n repo) to include them in the source POT file.
 BASE_STRINGS = [
+    "All classes",
+    "Globals",
+    "Nodes",
+    "Resources",
+    "Editor-only",
+    "Other objects",
+    "Variant types",
     "Description",
     "Tutorials",
     "Properties",
@@ -58,10 +65,72 @@ BASE_STRINGS = [
     "This method is used to construct a type.",
     "This method doesn't need an instance to be called, so it can be called directly using the class name.",
     "This method describes a valid operator to use with this type as left-hand operand.",
+    "This value is an integer composed as a bitmask of the following flags.",
+    "There is currently no description for this class. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!",
+    "There is currently no description for this signal. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!",
+    "There is currently no description for this annotation. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!",
+    "There is currently no description for this property. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!",
+    "There is currently no description for this constructor. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!",
+    "There is currently no description for this method. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!",
+    "There is currently no description for this operator. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!",
+    "There is currently no description for this theme property. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!",
+    "There are notable differences when using this API with C#. See :ref:`doc_c_sharp_differences` for more information.",
 ]
 strings_l10n: Dict[str, str] = {}
 
 STYLES: Dict[str, str] = {}
+
+CLASS_GROUPS: Dict[str, str] = {
+    "global": "Globals",
+    "node": "Nodes",
+    "resource": "Resources",
+    "object": "Other objects",
+    "editor": "Editor-only",
+    "variant": "Variant types",
+}
+CLASS_GROUPS_BASE: Dict[str, str] = {
+    "node": "Node",
+    "resource": "Resource",
+    "object": "Object",
+    "variant": "Variant",
+}
+# Sync with editor\register_editor_types.cpp
+EDITOR_CLASSES: List[str] = [
+    "FileSystemDock",
+    "ScriptCreateDialog",
+    "ScriptEditor",
+    "ScriptEditorBase",
+]
+# Sync with the types mentioned in https://docs.godotengine.org/en/stable/tutorials/scripting/c_sharp/c_sharp_differences.html
+CLASSES_WITH_CSHARP_DIFFERENCES: List[str] = [
+    "@GlobalScope",
+    "String",
+    "NodePath",
+    "Signal",
+    "Callable",
+    "RID",
+    "Basis",
+    "Transform2D",
+    "Transform3D",
+    "Rect2",
+    "Rect2i",
+    "AABB",
+    "Quaternion",
+    "Projection",
+    "Color",
+    "Array",
+    "Dictionary",
+    "PackedByteArray",
+    "PackedColorArray",
+    "PackedFloat32Array",
+    "PackedFloat64Array",
+    "PackedInt32Array",
+    "PackedInt64Array",
+    "PackedStringArray",
+    "PackedVector2Array",
+    "PackedVector3Array",
+    "Variant",
+]
 
 
 class State:
@@ -221,7 +290,7 @@ class State:
                         enum_def = class_def.enums[enum]
 
                     else:
-                        enum_def = EnumDef(enum, is_bitfield)
+                        enum_def = EnumDef(enum, TypeName("int", enum), is_bitfield)
                         class_def.enums[enum] = enum_def
 
                     enum_def.values[constant_name] = constant_def
@@ -329,17 +398,27 @@ class State:
         return cast
 
     def sort_classes(self) -> None:
-        self.classes = OrderedDict(sorted(self.classes.items(), key=lambda t: t[0]))
+        self.classes = OrderedDict(sorted(self.classes.items(), key=lambda t: t[0].lower()))
+
+
+class TagState:
+    def __init__(self, raw: str, name: str, arguments: List[str], closing: bool) -> None:
+        self.raw = raw
+
+        self.name = name
+        self.arguments = arguments
+        self.closing = closing
 
 
 class TypeName:
-    def __init__(self, type_name: str, enum: Optional[str] = None) -> None:
+    def __init__(self, type_name: str, enum: Optional[str] = None, is_bitfield: bool = False) -> None:
         self.type_name = type_name
         self.enum = enum
+        self.is_bitfield = is_bitfield
 
     def to_rst(self, state: State) -> str:
         if self.enum is not None:
-            return make_enum(self.enum, state)
+            return make_enum(self.enum, self.is_bitfield, state)
         elif self.type_name == "void":
             return "void"
         else:
@@ -347,7 +426,7 @@ class TypeName:
 
     @classmethod
     def from_element(cls, element: ET.Element) -> "TypeName":
-        return cls(element.attrib["type"], element.get("enum"))
+        return cls(element.attrib["type"], element.get("enum"), element.get("is_bitfield") == "true")
 
 
 class DefinitionBase:
@@ -439,9 +518,10 @@ class ConstantDef(DefinitionBase):
 
 
 class EnumDef(DefinitionBase):
-    def __init__(self, name: str, bitfield: bool) -> None:
+    def __init__(self, name: str, type_name: TypeName, bitfield: bool) -> None:
         super().__init__("enum", name)
 
+        self.type_name = type_name
         self.values: OrderedDict[str, ConstantDef] = OrderedDict()
         self.is_bitfield = bitfield
 
@@ -547,7 +627,7 @@ def main() -> None:
         if path.endswith("/") or path.endswith("\\"):
             path = path[:-1]
 
-        if os.path.basename(path) == "modules":
+        if os.path.basename(path) in ["modules", "platform"]:
             for subdir, dirs, _ in os.walk(path):
                 if "doc_classes" in dirs:
                     doc_dir = os.path.join(subdir, "doc_classes")
@@ -575,10 +655,6 @@ def main() -> None:
             continue
         doc = tree.getroot()
 
-        if "version" not in doc.attrib:
-            print_error(f'{cur_file}: "version" attribute missing from "doc".', state)
-            continue
-
         name = doc.attrib["name"]
         if name in classes:
             print_error(f'{cur_file}: Duplicate class "{name}".', state)
@@ -601,13 +677,33 @@ def main() -> None:
 
     print("Generating the RST class reference...")
 
+    grouped_classes: Dict[str, List[str]] = {}
+
     for class_name, class_def in state.classes.items():
         if args.filter and not pattern.search(class_def.filepath):
             continue
         state.current_class = class_name
         make_rst_class(class_def, state, args.dry_run, args.output)
 
+        group_name = get_class_group(class_def, state)
+
+        if group_name not in grouped_classes:
+            grouped_classes[group_name] = []
+        grouped_classes[group_name].append(class_name)
+
+        if is_editor_class(class_def):
+            if "editor" not in grouped_classes:
+                grouped_classes["editor"] = []
+            grouped_classes["editor"].append(class_name)
+
     print("")
+    print("Generating the index file...")
+
+    make_rst_index(grouped_classes, args.dry_run, args.output)
+
+    print("")
+
+    # Print out warnings and errors, or lack thereof, and exit with an appropriate code.
 
     if state.num_warnings >= 2:
         print(
@@ -618,19 +714,20 @@ def main() -> None:
             f'{STYLES["yellow"]}1 warning was found in the class reference XML. Please check the messages above.{STYLES["reset"]}'
         )
 
-    if state.num_errors == 0:
-        print(f'{STYLES["green"]}No errors found in the class reference XML.{STYLES["reset"]}')
+    if state.num_errors >= 2:
+        print(
+            f'{STYLES["red"]}{state.num_errors} errors were found in the class reference XML. Please check the messages above.{STYLES["reset"]}'
+        )
+    elif state.num_errors == 1:
+        print(
+            f'{STYLES["red"]}1 error was found in the class reference XML. Please check the messages above.{STYLES["reset"]}'
+        )
+
+    if state.num_warnings == 0 and state.num_errors == 0:
+        print(f'{STYLES["green"]}No warnings or errors found in the class reference XML.{STYLES["reset"]}')
         if not args.dry_run:
             print(f"Wrote reStructuredText files for each class to: {args.output}")
     else:
-        if state.num_errors >= 2:
-            print(
-                f'{STYLES["red"]}{state.num_errors} errors were found in the class reference XML. Please check the messages above.{STYLES["reset"]}'
-            )
-        else:
-            print(
-                f'{STYLES["red"]}1 error was found in the class reference XML. Please check the messages above.{STYLES["reset"]}'
-            )
         exit(1)
 
 
@@ -655,6 +752,53 @@ def translate(string: str) -> str:
     return strings_l10n.get(string, string)
 
 
+def get_git_branch() -> str:
+    if hasattr(version, "docs") and version.docs != "latest":
+        return version.docs
+
+    return "master"
+
+
+def get_class_group(class_def: ClassDef, state: State) -> str:
+    group_name = "variant"
+    class_name = class_def.name
+
+    if class_name.startswith("@"):
+        group_name = "global"
+    elif class_def.inherits:
+        inherits = class_def.inherits.strip()
+
+        while inherits in state.classes:
+            if inherits == "Node":
+                group_name = "node"
+                break
+            if inherits == "Resource":
+                group_name = "resource"
+                break
+            if inherits == "Object":
+                group_name = "object"
+                break
+
+            inode = state.classes[inherits].inherits
+            if inode:
+                inherits = inode.strip()
+            else:
+                break
+
+    return group_name
+
+
+def is_editor_class(class_def: ClassDef) -> bool:
+    class_name = class_def.name
+
+    if class_name.startswith("Editor"):
+        return True
+    if class_name in EDITOR_CLASSES:
+        return True
+
+    return False
+
+
 # Generator methods.
 
 
@@ -672,10 +816,7 @@ def make_rst_class(class_def: ClassDef, state: State, dry_run: bool, output_dir:
     # Warn contributors not to edit this file directly.
     # Also provide links to the source files for reference.
 
-    git_branch = "master"
-    if hasattr(version, "docs") and version.docs != "latest":
-        git_branch = version.docs
-
+    git_branch = get_git_branch()
     source_xml_path = os.path.relpath(class_def.filepath, root_directory).replace("\\", "/")
     source_github_url = f"https://github.com/godotengine/godot/tree/{git_branch}/{source_xml_path}"
     generator_github_url = f"https://github.com/godotengine/godot/tree/{git_branch}/doc/tools/make_rst.py"
@@ -689,7 +830,8 @@ def make_rst_class(class_def: ClassDef, state: State, dry_run: bool, output_dir:
     f.write(f".. _class_{class_name}:\n\n")
     f.write(make_heading(class_name, "=", False))
 
-    # Inheritance tree
+    ### INHERITANCE TREE ###
+
     # Ascendants
     if class_def.inherits:
         inherits = class_def.inherits.strip()
@@ -723,25 +865,61 @@ def make_rst_class(class_def: ClassDef, state: State, dry_run: bool, output_dir:
             f.write(make_type(child, state))
         f.write("\n\n")
 
+    ### INTRODUCTION ###
+
+    has_description = False
+
     # Brief description
-    if class_def.brief_description is not None:
+    if class_def.brief_description is not None and class_def.brief_description.strip() != "":
+        has_description = True
+
         f.write(f"{format_text_block(class_def.brief_description.strip(), class_def, state)}\n\n")
 
     # Class description
     if class_def.description is not None and class_def.description.strip() != "":
+        has_description = True
+
+        f.write(".. rst-class:: classref-introduction-group\n\n")
         f.write(make_heading("Description", "-"))
+
         f.write(f"{format_text_block(class_def.description.strip(), class_def, state)}\n\n")
+
+    if not has_description:
+        f.write(".. container:: contribute\n\n\t")
+        f.write(
+            translate(
+                "There is currently no description for this class. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!"
+            )
+            + "\n\n"
+        )
+
+    if class_def.name in CLASSES_WITH_CSHARP_DIFFERENCES:
+        f.write(".. note::\n\n\t")
+        f.write(
+            translate(
+                "There are notable differences when using this API with C#. See :ref:`doc_c_sharp_differences` for more information."
+            )
+            + "\n\n"
+        )
 
     # Online tutorials
     if len(class_def.tutorials) > 0:
+        f.write(".. rst-class:: classref-introduction-group\n\n")
         f.write(make_heading("Tutorials", "-"))
+
         for url, title in class_def.tutorials:
             f.write(f"- {make_link(url, title)}\n\n")
 
-    # Properties overview
+    ### REFERENCE TABLES ###
+
+    # Reused container for reference tables.
     ml: List[Tuple[Optional[str], ...]] = []
+
+    # Properties reference table
     if len(class_def.properties) > 0:
+        f.write(".. rst-class:: classref-reftable-group\n\n")
         f.write(make_heading("Properties", "-"))
+
         ml = []
         for property_def in class_def.properties.values():
             type_rst = property_def.type_name.to_rst(state)
@@ -753,76 +931,108 @@ def make_rst_class(class_def: ClassDef, state: State, dry_run: bool, output_dir:
             else:
                 ref = f":ref:`{property_def.name}<class_{class_name}_property_{property_def.name}>`"
                 ml.append((type_rst, ref, default))
+
         format_table(f, ml, True)
 
-    # Constructors, Methods, Operators overview
+    # Constructors, Methods, Operators reference tables
     if len(class_def.constructors) > 0:
+        f.write(".. rst-class:: classref-reftable-group\n\n")
         f.write(make_heading("Constructors", "-"))
+
         ml = []
         for method_list in class_def.constructors.values():
             for m in method_list:
                 ml.append(make_method_signature(class_def, m, "constructor", state))
+
         format_table(f, ml)
 
     if len(class_def.methods) > 0:
+        f.write(".. rst-class:: classref-reftable-group\n\n")
         f.write(make_heading("Methods", "-"))
+
         ml = []
         for method_list in class_def.methods.values():
             for m in method_list:
                 ml.append(make_method_signature(class_def, m, "method", state))
+
         format_table(f, ml)
 
     if len(class_def.operators) > 0:
+        f.write(".. rst-class:: classref-reftable-group\n\n")
         f.write(make_heading("Operators", "-"))
+
         ml = []
         for method_list in class_def.operators.values():
             for m in method_list:
                 ml.append(make_method_signature(class_def, m, "operator", state))
+
         format_table(f, ml)
 
-    # Theme properties
+    # Theme properties reference table
     if len(class_def.theme_items) > 0:
+        f.write(".. rst-class:: classref-reftable-group\n\n")
         f.write(make_heading("Theme Properties", "-"))
-        pl: List[Tuple[Optional[str], ...]] = []
+
+        ml = []
         for theme_item_def in class_def.theme_items.values():
             ref = f":ref:`{theme_item_def.name}<class_{class_name}_theme_{theme_item_def.data_name}_{theme_item_def.name}>`"
-            pl.append((theme_item_def.type_name.to_rst(state), ref, theme_item_def.default_value))
-        format_table(f, pl, True)
+            ml.append((theme_item_def.type_name.to_rst(state), ref, theme_item_def.default_value))
 
-    # Signals
+        format_table(f, ml, True)
+
+    ### DETAILED DESCRIPTIONS ###
+
+    # Signal descriptions
     if len(class_def.signals) > 0:
+        f.write(make_separator(True))
+        f.write(".. rst-class:: classref-descriptions-group\n\n")
         f.write(make_heading("Signals", "-"))
+
         index = 0
 
         for signal in class_def.signals.values():
             if index != 0:
-                f.write("----\n\n")
+                f.write(make_separator())
+
+            # Create signal signature and anchor point.
 
             f.write(f".. _class_{class_name}_signal_{signal.name}:\n\n")
+            f.write(".. rst-class:: classref-signal\n\n")
+
             _, signature = make_method_signature(class_def, signal, "", state)
-            f.write(f"- {signature}\n\n")
+            f.write(f"{signature}\n\n")
+
+            # Add signal description, or a call to action if it's missing.
 
             if signal.description is not None and signal.description.strip() != "":
                 f.write(f"{format_text_block(signal.description.strip(), signal, state)}\n\n")
+            else:
+                f.write(".. container:: contribute\n\n\t")
+                f.write(
+                    translate(
+                        "There is currently no description for this signal. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!"
+                    )
+                    + "\n\n"
+                )
 
             index += 1
 
-    # Enums
+    # Enumeration descriptions
     if len(class_def.enums) > 0:
+        f.write(make_separator(True))
+        f.write(".. rst-class:: classref-descriptions-group\n\n")
         f.write(make_heading("Enumerations", "-"))
+
         index = 0
 
         for e in class_def.enums.values():
             if index != 0:
-                f.write("----\n\n")
+                f.write(make_separator())
+
+            # Create enumeration signature and anchor point.
 
             f.write(f".. _enum_{class_name}_{e.name}:\n\n")
-            # Sphinx seems to divide the bullet list into individual <ul> tags if we weave the labels into it.
-            # As such I'll put them all above the list. Won't be perfect but better than making the list visually broken.
-            # As to why I'm not modifying the reference parser to directly link to the _enum label:
-            # If somebody gets annoyed enough to fix it, all existing references will magically improve.
-            for value in e.values.values():
-                f.write(f".. _class_{class_name}_constant_{value.name}:\n\n")
+            f.write(".. rst-class:: classref-enumeration\n\n")
 
             if e.is_bitfield:
                 f.write(f"flags **{e.name}**:\n\n")
@@ -830,54 +1040,86 @@ def make_rst_class(class_def: ClassDef, state: State, dry_run: bool, output_dir:
                 f.write(f"enum **{e.name}**:\n\n")
 
             for value in e.values.values():
-                f.write(f"- **{value.name}** = **{value.value}**")
+                # Also create signature and anchor point for each enum constant.
+
+                f.write(f".. _class_{class_name}_constant_{value.name}:\n\n")
+                f.write(".. rst-class:: classref-enumeration-constant\n\n")
+
+                f.write(f"{e.type_name.to_rst(state)} **{value.name}** = ``{value.value}``\n\n")
+
+                # Add enum constant description.
+
                 if value.text is not None and value.text.strip() != "":
-                    # If value.text contains a bullet point list, each entry needs additional indentation
-                    f.write(f" --- {indent_bullets(format_text_block(value.text.strip(), value, state))}")
+                    f.write(f"{format_text_block(value.text.strip(), value, state)}")
 
                 f.write("\n\n")
 
             index += 1
 
-    # Constants
+    # Constant descriptions
     if len(class_def.constants) > 0:
+        f.write(make_separator(True))
+        f.write(".. rst-class:: classref-descriptions-group\n\n")
         f.write(make_heading("Constants", "-"))
-        # Sphinx seems to divide the bullet list into individual <ul> tags if we weave the labels into it.
-        # As such I'll put them all above the list. Won't be perfect but better than making the list visually broken.
-        for constant in class_def.constants.values():
-            f.write(f".. _class_{class_name}_constant_{constant.name}:\n\n")
 
         for constant in class_def.constants.values():
-            f.write(f"- **{constant.name}** = **{constant.value}**")
+            # Create constant signature and anchor point.
+
+            f.write(f".. _class_{class_name}_constant_{constant.name}:\n\n")
+            f.write(".. rst-class:: classref-constant\n\n")
+
+            f.write(f"**{constant.name}** = ``{constant.value}``\n\n")
+
+            # Add enum constant description.
+
             if constant.text is not None and constant.text.strip() != "":
-                f.write(f" --- {format_text_block(constant.text.strip(), constant, state)}")
+                f.write(f"{format_text_block(constant.text.strip(), constant, state)}")
 
             f.write("\n\n")
 
-    # Annotations
+    # Annotation descriptions
     if len(class_def.annotations) > 0:
+        f.write(make_separator(True))
         f.write(make_heading("Annotations", "-"))
+
         index = 0
 
         for method_list in class_def.annotations.values():  # type: ignore
             for i, m in enumerate(method_list):
                 if index != 0:
-                    f.write("----\n\n")
+                    f.write(make_separator())
+
+                # Create annotation signature and anchor point.
 
                 if i == 0:
                     f.write(f".. _class_{class_name}_annotation_{m.name}:\n\n")
 
+                f.write(".. rst-class:: classref-annotation\n\n")
+
                 _, signature = make_method_signature(class_def, m, "", state)
-                f.write(f"- {signature}\n\n")
+                f.write(f"{signature}\n\n")
+
+                # Add annotation description, or a call to action if it's missing.
 
                 if m.description is not None and m.description.strip() != "":
                     f.write(f"{format_text_block(m.description.strip(), m, state)}\n\n")
+                else:
+                    f.write(".. container:: contribute\n\n\t")
+                    f.write(
+                        translate(
+                            "There is currently no description for this annotation. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!"
+                        )
+                        + "\n\n"
+                    )
 
                 index += 1
 
     # Property descriptions
     if any(not p.overrides for p in class_def.properties.values()) > 0:
+        f.write(make_separator(True))
+        f.write(".. rst-class:: classref-descriptions-group\n\n")
         f.write(make_heading("Property Descriptions", "-"))
+
         index = 0
 
         for property_def in class_def.properties.values():
@@ -885,113 +1127,199 @@ def make_rst_class(class_def: ClassDef, state: State, dry_run: bool, output_dir:
                 continue
 
             if index != 0:
-                f.write("----\n\n")
+                f.write(make_separator())
+
+            # Create property signature and anchor point.
 
             f.write(f".. _class_{class_name}_property_{property_def.name}:\n\n")
-            f.write(f"- {property_def.type_name.to_rst(state)} **{property_def.name}**\n\n")
+            f.write(".. rst-class:: classref-property\n\n")
 
-            info: List[Tuple[Optional[str], ...]] = []
-            # Not using translate() for now as it breaks table formatting.
+            property_default = ""
             if property_def.default_value is not None:
-                info.append(("*Default*", property_def.default_value))
-            if property_def.setter is not None and not property_def.setter.startswith("_"):
-                info.append(("*Setter*", f"{property_def.setter}(value)"))
-            if property_def.getter is not None and not property_def.getter.startswith("_"):
-                info.append(("*Getter*", f"{property_def.getter}()"))
+                property_default = f" = {property_def.default_value}"
+            f.write(f"{property_def.type_name.to_rst(state)} **{property_def.name}**{property_default}\n\n")
 
-            if len(info) > 0:
-                format_table(f, info)
+            # Create property setter and getter records.
+
+            property_setget = ""
+
+            if property_def.setter is not None and not property_def.setter.startswith("_"):
+                property_setter = make_setter_signature(class_def, property_def, state)
+                property_setget += f"- {property_setter}\n"
+
+            if property_def.getter is not None and not property_def.getter.startswith("_"):
+                property_getter = make_getter_signature(class_def, property_def, state)
+                property_setget += f"- {property_getter}\n"
+
+            if property_setget != "":
+                f.write(".. rst-class:: classref-property-setget\n\n")
+                f.write(property_setget)
+                f.write("\n")
+
+            # Add property description, or a call to action if it's missing.
 
             if property_def.text is not None and property_def.text.strip() != "":
                 f.write(f"{format_text_block(property_def.text.strip(), property_def, state)}\n\n")
+            else:
+                f.write(".. container:: contribute\n\n\t")
+                f.write(
+                    translate(
+                        "There is currently no description for this property. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!"
+                    )
+                    + "\n\n"
+                )
 
             index += 1
 
     # Constructor, Method, Operator descriptions
     if len(class_def.constructors) > 0:
+        f.write(make_separator(True))
+        f.write(".. rst-class:: classref-descriptions-group\n\n")
         f.write(make_heading("Constructor Descriptions", "-"))
+
         index = 0
 
         for method_list in class_def.constructors.values():
             for i, m in enumerate(method_list):
                 if index != 0:
-                    f.write("----\n\n")
+                    f.write(make_separator())
+
+                # Create constructor signature and anchor point.
 
                 if i == 0:
                     f.write(f".. _class_{class_name}_constructor_{m.name}:\n\n")
 
+                f.write(".. rst-class:: classref-constructor\n\n")
+
                 ret_type, signature = make_method_signature(class_def, m, "", state)
-                f.write(f"- {ret_type} {signature}\n\n")
+                f.write(f"{ret_type} {signature}\n\n")
+
+                # Add constructor description, or a call to action if it's missing.
 
                 if m.description is not None and m.description.strip() != "":
                     f.write(f"{format_text_block(m.description.strip(), m, state)}\n\n")
+                else:
+                    f.write(".. container:: contribute\n\n\t")
+                    f.write(
+                        translate(
+                            "There is currently no description for this constructor. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!"
+                        )
+                        + "\n\n"
+                    )
 
                 index += 1
 
     if len(class_def.methods) > 0:
+        f.write(make_separator(True))
+        f.write(".. rst-class:: classref-descriptions-group\n\n")
         f.write(make_heading("Method Descriptions", "-"))
+
         index = 0
 
         for method_list in class_def.methods.values():
             for i, m in enumerate(method_list):
                 if index != 0:
-                    f.write("----\n\n")
+                    f.write(make_separator())
+
+                # Create method signature and anchor point.
 
                 if i == 0:
                     f.write(f".. _class_{class_name}_method_{m.name}:\n\n")
 
+                f.write(".. rst-class:: classref-method\n\n")
+
                 ret_type, signature = make_method_signature(class_def, m, "", state)
-                f.write(f"- {ret_type} {signature}\n\n")
+                f.write(f"{ret_type} {signature}\n\n")
+
+                # Add method description, or a call to action if it's missing.
 
                 if m.description is not None and m.description.strip() != "":
                     f.write(f"{format_text_block(m.description.strip(), m, state)}\n\n")
+                else:
+                    f.write(".. container:: contribute\n\n\t")
+                    f.write(
+                        translate(
+                            "There is currently no description for this method. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!"
+                        )
+                        + "\n\n"
+                    )
 
                 index += 1
 
     if len(class_def.operators) > 0:
+        f.write(make_separator(True))
+        f.write(".. rst-class:: classref-descriptions-group\n\n")
         f.write(make_heading("Operator Descriptions", "-"))
+
         index = 0
 
         for method_list in class_def.operators.values():
             for i, m in enumerate(method_list):
                 if index != 0:
-                    f.write("----\n\n")
+                    f.write(make_separator())
 
-                if i == 0:
-                    f.write(
-                        f".. _class_{class_name}_operator_{sanitize_operator_name(m.name, state)}_{m.return_type.type_name}:\n\n"
-                    )
+                # Create operator signature and anchor point.
+
+                operator_anchor = f".. _class_{class_name}_operator_{sanitize_operator_name(m.name, state)}"
+                for parameter in m.parameters:
+                    operator_anchor += f"_{parameter.type_name.type_name}"
+                operator_anchor += f":\n\n"
+                f.write(operator_anchor)
+
+                f.write(".. rst-class:: classref-operator\n\n")
 
                 ret_type, signature = make_method_signature(class_def, m, "", state)
-                f.write(f"- {ret_type} {signature}\n\n")
+                f.write(f"{ret_type} {signature}\n\n")
+
+                # Add operator description, or a call to action if it's missing.
 
                 if m.description is not None and m.description.strip() != "":
                     f.write(f"{format_text_block(m.description.strip(), m, state)}\n\n")
+                else:
+                    f.write(".. container:: contribute\n\n\t")
+                    f.write(
+                        translate(
+                            "There is currently no description for this operator. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!"
+                        )
+                        + "\n\n"
+                    )
 
                 index += 1
 
     # Theme property descriptions
     if len(class_def.theme_items) > 0:
+        f.write(make_separator(True))
+        f.write(".. rst-class:: classref-descriptions-group\n\n")
         f.write(make_heading("Theme Property Descriptions", "-"))
+
         index = 0
 
         for theme_item_def in class_def.theme_items.values():
             if index != 0:
-                f.write("----\n\n")
+                f.write(make_separator())
+
+            # Create theme property signature and anchor point.
 
             f.write(f".. _class_{class_name}_theme_{theme_item_def.data_name}_{theme_item_def.name}:\n\n")
-            f.write(f"- {theme_item_def.type_name.to_rst(state)} **{theme_item_def.name}**\n\n")
+            f.write(".. rst-class:: classref-themeproperty\n\n")
 
-            info = []
+            theme_item_default = ""
             if theme_item_def.default_value is not None:
-                # Not using translate() for now as it breaks table formatting.
-                info.append(("*Default*", theme_item_def.default_value))
+                theme_item_default = f" = {theme_item_def.default_value}"
+            f.write(f"{theme_item_def.type_name.to_rst(state)} **{theme_item_def.name}**{theme_item_default}\n\n")
 
-            if len(info) > 0:
-                format_table(f, info)
+            # Add theme property description, or a call to action if it's missing.
 
             if theme_item_def.text is not None and theme_item_def.text.strip() != "":
                 f.write(f"{format_text_block(theme_item_def.text.strip(), theme_item_def, state)}\n\n")
+            else:
+                f.write(".. container:: contribute\n\n\t")
+                f.write(
+                    translate(
+                        "There is currently no description for this theme property. Please help us by :ref:`contributing one <doc_updating_the_class_reference>`!"
+                    )
+                    + "\n\n"
+                )
 
             index += 1
 
@@ -1010,7 +1338,7 @@ def make_type(klass: str, state: State) -> str:
     return klass
 
 
-def make_enum(t: str, state: State) -> str:
+def make_enum(t: str, is_bitfield: bool, state: State) -> str:
     p = t.find(".")
     if p >= 0:
         c = t[0:p]
@@ -1026,7 +1354,12 @@ def make_enum(t: str, state: State) -> str:
             c = "@GlobalScope"
 
     if c in state.classes and e in state.classes[c].enums:
-        return f":ref:`{e}<enum_{c}_{e}>`"
+        if is_bitfield:
+            if not state.classes[c].enums[e].is_bitfield:
+                print_error(f'{state.current_class}.xml: Enum "{t}" is not bitfield.', state)
+            return f"|bitfield|\<:ref:`{e}<enum_{c}_{e}>`\>"
+        else:
+            return f":ref:`{e}<enum_{c}_{e}>`"
 
     # Don't fail for `Vector3.Axis`, as this enum is a special case which is expected not to be resolved.
     if f"{c}.{e}" != "Vector3.Axis":
@@ -1051,7 +1384,10 @@ def make_method_signature(
     if isinstance(definition, MethodDef) and ref_type != "":
         if ref_type == "operator":
             op_name = definition.name.replace("<", "\\<")  # So operator "<" gets correctly displayed.
-            out += f":ref:`{op_name}<class_{class_def.name}_{ref_type}_{sanitize_operator_name(definition.name, state)}_{definition.return_type.type_name}>` "
+            out += f":ref:`{op_name}<class_{class_def.name}_{ref_type}_{sanitize_operator_name(definition.name, state)}"
+            for parameter in definition.parameters:
+                out += f"_{parameter.type_name.type_name}"
+            out += f">` "
         else:
             out += f":ref:`{definition.name}<class_{class_def.name}_{ref_type}_{definition.name}>` "
     else:
@@ -1086,6 +1422,39 @@ def make_method_signature(
     return ret_type, out
 
 
+def make_setter_signature(class_def: ClassDef, property_def: PropertyDef, state: State) -> str:
+    if property_def.setter is None:
+        return ""
+
+    # If setter is a method available as a method definition, we use that.
+    if property_def.setter in class_def.methods:
+        setter = class_def.methods[property_def.setter][0]
+    # Otherwise we fake it with the information we have available.
+    else:
+        setter_params: List[ParameterDef] = []
+        setter_params.append(ParameterDef("value", property_def.type_name, None))
+        setter = MethodDef(property_def.setter, TypeName("void"), setter_params, None, None)
+
+    ret_type, signature = make_method_signature(class_def, setter, "", state)
+    return f"{ret_type} {signature}"
+
+
+def make_getter_signature(class_def: ClassDef, property_def: PropertyDef, state: State) -> str:
+    if property_def.getter is None:
+        return ""
+
+    # If getter is a method available as a method definition, we use that.
+    if property_def.getter in class_def.methods:
+        getter = class_def.methods[property_def.getter][0]
+    # Otherwise we fake it with the information we have available.
+    else:
+        getter_params: List[ParameterDef] = []
+        getter = MethodDef(property_def.getter, property_def.type_name, getter_params, None, None)
+
+    ret_type, signature = make_method_signature(class_def, getter, "", state)
+    return f"{ret_type} {signature}"
+
+
 def make_heading(title: str, underline: str, l10n: bool = True) -> str:
     if l10n:
         new_title = translate(title)
@@ -1106,6 +1475,7 @@ def make_footer() -> str:
         "This method doesn't need an instance to be called, so it can be called directly using the class name."
     )
     operator_msg = translate("This method describes a valid operator to use with this type as left-hand operand.")
+    bitfield_msg = translate("This value is an integer composed as a bitmask of the following flags.")
 
     return (
         f".. |virtual| replace:: :abbr:`virtual ({virtual_msg})`\n"
@@ -1114,7 +1484,16 @@ def make_footer() -> str:
         f".. |constructor| replace:: :abbr:`constructor ({constructor_msg})`\n"
         f".. |static| replace:: :abbr:`static ({static_msg})`\n"
         f".. |operator| replace:: :abbr:`operator ({operator_msg})`\n"
+        f".. |bitfield| replace:: :abbr:`BitField ({bitfield_msg})`\n"
     )
+
+
+def make_separator(section_level: bool = False) -> str:
+    separator_class = "item"
+    if section_level:
+        separator_class = "section"
+
+    return f".. rst-class:: classref-{separator_class}-separator\n\n----\n\n"
 
 
 def make_link(url: str, title: str) -> str:
@@ -1142,12 +1521,73 @@ def make_link(url: str, title: str) -> str:
     return f"`{url} <{url}>`__"
 
 
+def make_rst_index(grouped_classes: Dict[str, List[str]], dry_run: bool, output_dir: str) -> None:
+    if dry_run:
+        f = open(os.devnull, "w", encoding="utf-8")
+    else:
+        f = open(os.path.join(output_dir, "index.rst"), "w", encoding="utf-8")
+
+    # Remove the "Edit on Github" button from the online docs page.
+    f.write(":github_url: hide\n\n")
+
+    # Warn contributors not to edit this file directly.
+    # Also provide links to the source files for reference.
+
+    git_branch = get_git_branch()
+    generator_github_url = f"https://github.com/godotengine/godot/tree/{git_branch}/doc/tools/make_rst.py"
+
+    f.write(".. DO NOT EDIT THIS FILE!!!\n")
+    f.write(".. Generated automatically from Godot engine sources.\n")
+    f.write(f".. Generator: {generator_github_url}.\n\n")
+
+    f.write(".. _doc_class_reference:\n\n")
+
+    main_title = translate("All classes")
+    f.write(f"{main_title}\n")
+    f.write(f"{'=' * len(main_title)}\n\n")
+
+    for group_name in CLASS_GROUPS:
+        if group_name in grouped_classes:
+            group_title = translate(CLASS_GROUPS[group_name])
+
+            f.write(f"{group_title}\n")
+            f.write(f"{'=' * len(group_title)}\n\n")
+
+            f.write(".. toctree::\n")
+            f.write("    :maxdepth: 1\n")
+            f.write(f"    :name: toc-class-ref-{group_name}s\n")
+            f.write("\n")
+
+            if group_name in CLASS_GROUPS_BASE:
+                f.write(f"    class_{CLASS_GROUPS_BASE[group_name].lower()}\n")
+
+            for class_name in grouped_classes[group_name]:
+                if group_name in CLASS_GROUPS_BASE and CLASS_GROUPS_BASE[group_name].lower() == class_name.lower():
+                    continue
+
+                f.write(f"    class_{class_name.lower()}\n")
+
+            f.write("\n")
+
+
 # Formatting helpers.
 
 
 RESERVED_FORMATTING_TAGS = ["i", "b", "u", "code", "kbd", "center", "url", "br"]
-RESERVED_CODEBLOCK_TAGS = ["codeblocks", "codeblock", "gdscript", "csharp"]
-RESERVED_CROSSLINK_TAGS = ["method", "member", "signal", "constant", "enum", "annotation", "theme_item", "param"]
+RESERVED_LAYOUT_TAGS = ["codeblocks"]
+RESERVED_CODEBLOCK_TAGS = ["codeblock", "gdscript", "csharp"]
+RESERVED_CROSSLINK_TAGS = [
+    "method",
+    "constructor",
+    "operator",
+    "member",
+    "signal",
+    "constant",
+    "enum",
+    "annotation",
+    "theme_item",
+    "param",
+]
 
 
 def is_in_tagset(tag_text: str, tagset: List[str]) -> bool:
@@ -1163,6 +1603,35 @@ def is_in_tagset(tag_text: str, tagset: List[str]) -> bool:
             return True
 
     return False
+
+
+def get_tag_and_args(tag_text: str) -> TagState:
+    tag_name = tag_text
+    arguments: List[str] = []
+
+    assign_pos = tag_text.find("=")
+    if assign_pos >= 0:
+        tag_name = tag_text[:assign_pos]
+        arguments = [tag_text[assign_pos + 1 :].strip()]
+    else:
+        space_pos = tag_text.find(" ")
+        if space_pos >= 0:
+            tag_name = tag_text[:space_pos]
+            arguments = [tag_text[space_pos + 1 :].strip()]
+
+    closing = False
+    if tag_name.startswith("/"):
+        tag_name = tag_name[1:]
+        closing = True
+
+    return TagState(tag_text, tag_name, arguments, closing)
+
+
+def parse_link_target(link_target: str, state: State, context_name: str) -> List[str]:
+    if link_target.find(".") != -1:
+        return link_target.split(".")
+    else:
+        return [state.current_class, link_target]
 
 
 def format_text_block(
@@ -1187,11 +1656,15 @@ def format_text_block(
         # Handle codeblocks
         if (
             post_text.startswith("[codeblock]")
+            or post_text.startswith("[codeblock ")
             or post_text.startswith("[gdscript]")
+            or post_text.startswith("[gdscript ")
             or post_text.startswith("[csharp]")
+            or post_text.startswith("[csharp ")
         ):
-            block_type = post_text[1:].split("]")[0]
-            result = format_codeblock(block_type, post_text, indent_level, state)
+            tag_text = post_text[1:].split("]", 1)[0]
+            tag_state = get_tag_and_args(tag_text)
+            result = format_codeblock(tag_state, post_text, indent_level, state)
             if result is None:
                 return ""
             text = f"{pre_text}{result[0]}"
@@ -1211,6 +1684,8 @@ def format_text_block(
     inside_code = False
     inside_code_tag = ""
     inside_code_tabs = False
+    ignore_code_warnings = False
+
     pos = 0
     tag_depth = 0
     while True:
@@ -1230,10 +1705,10 @@ def format_text_block(
         escape_post = False
 
         # Tag is a reference to a class.
-        if tag_text in state.classes:
+        if tag_text in state.classes and not inside_code:
             if tag_text == state.current_class:
-                # Don't create a link to the same class, format it as inline code.
-                tag_text = f"``{tag_text}``"
+                # Don't create a link to the same class, format it as strong emphasis.
+                tag_text = f"**{tag_text}**"
             else:
                 tag_text = make_type(tag_text, state)
             escape_pre = True
@@ -1241,33 +1716,34 @@ def format_text_block(
 
         # Tag is a cross-reference or a formatting directive.
         else:
-            cmd = tag_text
-            space_pos = tag_text.find(" ")
+            tag_state = get_tag_and_args(tag_text)
 
             # Anything identified as a tag inside of a code block is valid,
             # unless it's a matching closing tag.
             if inside_code:
                 # Exiting codeblocks and inline code tags.
 
-                if inside_code_tag == cmd[1:]:
-                    if cmd == "/codeblock" or cmd == "/gdscript" or cmd == "/csharp":
+                if tag_state.closing and tag_state.name == inside_code_tag:
+                    if is_in_tagset(tag_state.name, RESERVED_CODEBLOCK_TAGS):
                         tag_text = ""
                         tag_depth -= 1
                         inside_code = False
+                        ignore_code_warnings = False
                         # Strip newline if the tag was alone on one
                         if pre_text[-1] == "\n":
                             pre_text = pre_text[:-1]
 
-                    elif cmd == "/code":
+                    elif is_in_tagset(tag_state.name, ["code"]):
                         tag_text = "``"
                         tag_depth -= 1
                         inside_code = False
+                        ignore_code_warnings = False
                         escape_post = True
 
                 else:
-                    if cmd.startswith("/"):
+                    if not ignore_code_warnings and tag_state.closing:
                         print_warning(
-                            f'{state.current_class}.xml: Potential error inside of a code tag, found a string that looks like a closing tag "[{cmd}]" in {context_name}.',
+                            f'{state.current_class}.xml: Found a code string that looks like a closing tag "[{tag_state.raw}]" in {context_name}.',
                             state,
                         )
 
@@ -1275,26 +1751,27 @@ def format_text_block(
 
             # Entering codeblocks and inline code tags.
 
-            elif cmd == "codeblocks":
-                tag_depth += 1
-                tag_text = "\n.. tabs::"
-                inside_code_tabs = True
-            elif cmd == "/codeblocks":
-                tag_depth -= 1
-                tag_text = ""
-                inside_code_tabs = False
+            elif tag_state.name == "codeblocks":
+                if tag_state.closing:
+                    tag_depth -= 1
+                    tag_text = ""
+                    inside_code_tabs = False
+                else:
+                    tag_depth += 1
+                    tag_text = "\n.. tabs::"
+                    inside_code_tabs = True
 
-            elif cmd == "codeblock" or cmd == "gdscript" or cmd == "csharp":
+            elif is_in_tagset(tag_state.name, RESERVED_CODEBLOCK_TAGS):
                 tag_depth += 1
 
-                if cmd == "gdscript":
+                if tag_state.name == "gdscript":
                     if not inside_code_tabs:
                         print_error(
                             f"{state.current_class}.xml: GDScript code block is used outside of [codeblocks] in {context_name}.",
                             state,
                         )
                     tag_text = "\n .. code-tab:: gdscript\n"
-                elif cmd == "csharp":
+                elif tag_state.name == "csharp":
                     if not inside_code_tabs:
                         print_error(
                             f"{state.current_class}.xml: C# code block is used outside of [codeblocks] in {context_name}.",
@@ -1305,110 +1782,195 @@ def format_text_block(
                     tag_text = "\n::\n"
 
                 inside_code = True
-                inside_code_tag = cmd
+                inside_code_tag = tag_state.name
+                ignore_code_warnings = "skip-lint" in tag_state.arguments
 
-            elif cmd == "code":
+            elif is_in_tagset(tag_state.name, ["code"]):
                 tag_text = "``"
                 tag_depth += 1
+
                 inside_code = True
-                inside_code_tag = cmd
+                inside_code_tag = "code"
+                ignore_code_warnings = "skip-lint" in tag_state.arguments
                 escape_pre = True
 
+                if not ignore_code_warnings:
+                    endcode_pos = text.find("[/code]", endq_pos + 1)
+                    if endcode_pos == -1:
+                        print_error(
+                            f"{state.current_class}.xml: Tag depth mismatch for [code]: no closing [/code] in {context_name}.",
+                            state,
+                        )
+                        break
+
+                    inside_code_text = text[endq_pos + 1 : endcode_pos]
+                    if inside_code_text.endswith("()"):
+                        # It's formatted like a call for some reason, may still be a mistake.
+                        inside_code_text = inside_code_text[:-2]
+
+                    if inside_code_text in state.classes:
+                        print_warning(
+                            f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches one of the known classes in {context_name}.',
+                            state,
+                        )
+
+                    target_class_name, target_name, *rest = parse_link_target(inside_code_text, state, context_name)
+                    if len(rest) == 0 and target_class_name in state.classes:
+                        class_def = state.classes[target_class_name]
+
+                        if target_name in class_def.methods:
+                            print_warning(
+                                f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches the {target_class_name}.{target_name} method in {context_name}.',
+                                state,
+                            )
+
+                        elif target_name in class_def.constructors:
+                            print_warning(
+                                f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches the {target_class_name}.{target_name} constructor in {context_name}.',
+                                state,
+                            )
+
+                        elif target_name in class_def.operators:
+                            print_warning(
+                                f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches the {target_class_name}.{target_name} operator in {context_name}.',
+                                state,
+                            )
+
+                        elif target_name in class_def.properties:
+                            print_warning(
+                                f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches the {target_class_name}.{target_name} member in {context_name}.',
+                                state,
+                            )
+
+                        elif target_name in class_def.signals:
+                            print_warning(
+                                f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches the {target_class_name}.{target_name} signal in {context_name}.',
+                                state,
+                            )
+
+                        elif target_name in class_def.annotations:
+                            print_warning(
+                                f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches the {target_class_name}.{target_name} annotation in {context_name}.',
+                                state,
+                            )
+
+                        elif target_name in class_def.theme_items:
+                            print_warning(
+                                f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches the {target_class_name}.{target_name} theme item in {context_name}.',
+                                state,
+                            )
+
+                        elif target_name in class_def.constants:
+                            print_warning(
+                                f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches the {target_class_name}.{target_name} constant in {context_name}.',
+                                state,
+                            )
+
+                        else:
+                            for enum in class_def.enums.values():
+                                if target_name in enum.values:
+                                    print_warning(
+                                        f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches the {target_class_name}.{target_name} enum value in {context_name}.',
+                                        state,
+                                    )
+                                    break
+
+                    valid_param_context = isinstance(context, (MethodDef, SignalDef, AnnotationDef))
+                    if valid_param_context:
+                        context_params: List[ParameterDef] = context.parameters  # type: ignore
+                        for param_def in context_params:
+                            if param_def.name == inside_code_text:
+                                print_warning(
+                                    f'{state.current_class}.xml: Found a code string "{inside_code_text}" that matches one of the parameters in {context_name}.',
+                                    state,
+                                )
+                                break
+
             # Cross-references to items in this or other class documentation pages.
-            elif is_in_tagset(cmd, RESERVED_CROSSLINK_TAGS):
-                link_type: str = ""
-                link_target: str = ""
-                if space_pos >= 0:
-                    link_type = tag_text[:space_pos]
-                    link_target = tag_text[space_pos + 1 :].strip()
+            elif is_in_tagset(tag_state.name, RESERVED_CROSSLINK_TAGS):
+                link_target: str = tag_state.arguments[0] if len(tag_state.arguments) > 0 else ""
 
                 if link_target == "":
                     print_error(
-                        f'{state.current_class}.xml: Empty cross-reference link "{cmd}" in {context_name}.',
+                        f'{state.current_class}.xml: Empty cross-reference link "[{tag_state.raw}]" in {context_name}.',
                         state,
                     )
                     tag_text = ""
                 else:
                     if (
-                        cmd.startswith("method")
-                        or cmd.startswith("constructor")
-                        or cmd.startswith("operator")
-                        or cmd.startswith("member")
-                        or cmd.startswith("signal")
-                        or cmd.startswith("annotation")
-                        or cmd.startswith("theme_item")
-                        or cmd.startswith("constant")
+                        tag_state.name == "method"
+                        or tag_state.name == "constructor"
+                        or tag_state.name == "operator"
+                        or tag_state.name == "member"
+                        or tag_state.name == "signal"
+                        or tag_state.name == "annotation"
+                        or tag_state.name == "theme_item"
+                        or tag_state.name == "constant"
                     ):
-                        if link_target.find(".") != -1:
-                            ss = link_target.split(".")
-                            if len(ss) > 2:
-                                print_error(
-                                    f'{state.current_class}.xml: Bad reference "{link_target}" in {context_name}.',
-                                    state,
-                                )
-                            class_param, method_param = ss
-
-                        else:
-                            class_param = state.current_class
-                            method_param = link_target
+                        target_class_name, target_name, *rest = parse_link_target(link_target, state, context_name)
+                        if len(rest) > 0:
+                            print_error(
+                                f'{state.current_class}.xml: Bad reference "{link_target}" in {context_name}.',
+                                state,
+                            )
 
                         # Default to the tag command name. This works by default for most tags,
                         # but member and theme_item have special cases.
-                        ref_type = "_{}".format(link_type)
-                        if link_type == "member":
+                        ref_type = "_{}".format(tag_state.name)
+                        if tag_state.name == "member":
                             ref_type = "_property"
 
-                        if class_param in state.classes:
-                            class_def = state.classes[class_param]
+                        if target_class_name in state.classes:
+                            class_def = state.classes[target_class_name]
 
-                            if cmd.startswith("method") and method_param not in class_def.methods:
+                            if tag_state.name == "method" and target_name not in class_def.methods:
                                 print_error(
                                     f'{state.current_class}.xml: Unresolved method reference "{link_target}" in {context_name}.',
                                     state,
                                 )
 
-                            elif cmd.startswith("constructor") and method_param not in class_def.constructors:
+                            elif tag_state.name == "constructor" and target_name not in class_def.constructors:
                                 print_error(
                                     f'{state.current_class}.xml: Unresolved constructor reference "{link_target}" in {context_name}.',
                                     state,
                                 )
 
-                            elif cmd.startswith("operator") and method_param not in class_def.operators:
+                            elif tag_state.name == "operator" and target_name not in class_def.operators:
                                 print_error(
                                     f'{state.current_class}.xml: Unresolved operator reference "{link_target}" in {context_name}.',
                                     state,
                                 )
 
-                            elif cmd.startswith("member") and method_param not in class_def.properties:
+                            elif tag_state.name == "member" and target_name not in class_def.properties:
                                 print_error(
                                     f'{state.current_class}.xml: Unresolved member reference "{link_target}" in {context_name}.',
                                     state,
                                 )
 
-                            elif cmd.startswith("signal") and method_param not in class_def.signals:
+                            elif tag_state.name == "signal" and target_name not in class_def.signals:
                                 print_error(
                                     f'{state.current_class}.xml: Unresolved signal reference "{link_target}" in {context_name}.',
                                     state,
                                 )
 
-                            elif cmd.startswith("annotation") and method_param not in class_def.annotations:
+                            elif tag_state.name == "annotation" and target_name not in class_def.annotations:
                                 print_error(
                                     f'{state.current_class}.xml: Unresolved annotation reference "{link_target}" in {context_name}.',
                                     state,
                                 )
 
-                            elif cmd.startswith("theme_item"):
-                                if method_param not in class_def.theme_items:
+                            elif tag_state.name == "theme_item":
+                                if target_name not in class_def.theme_items:
                                     print_error(
                                         f'{state.current_class}.xml: Unresolved theme item reference "{link_target}" in {context_name}.',
                                         state,
                                     )
                                 else:
                                     # Needs theme data type to be properly linked, which we cannot get without a class.
-                                    name = class_def.theme_items[method_param].data_name
+                                    name = class_def.theme_items[target_name].data_name
                                     ref_type = f"_theme_{name}"
 
-                            elif cmd.startswith("constant"):
+                            elif tag_state.name == "constant":
                                 found = False
 
                                 # Search in the current class
@@ -1419,14 +1981,14 @@ def format_text_block(
                                     search_class_defs.append(state.classes["@GlobalScope"])
 
                                 for search_class_def in search_class_defs:
-                                    if method_param in search_class_def.constants:
-                                        class_param = search_class_def.name
+                                    if target_name in search_class_def.constants:
+                                        target_class_name = search_class_def.name
                                         found = True
 
                                     else:
                                         for enum in search_class_def.enums.values():
-                                            if method_param in enum.values:
-                                                class_param = search_class_def.name
+                                            if target_name in enum.values:
+                                                target_class_name = search_class_def.name
                                                 found = True
                                                 break
 
@@ -1438,25 +2000,25 @@ def format_text_block(
 
                         else:
                             print_error(
-                                f'{state.current_class}.xml: Unresolved type reference "{class_param}" in method reference "{link_target}" in {context_name}.',
+                                f'{state.current_class}.xml: Unresolved type reference "{target_class_name}" in method reference "{link_target}" in {context_name}.',
                                 state,
                             )
 
-                        repl_text = method_param
-                        if class_param != state.current_class:
-                            repl_text = f"{class_param}.{method_param}"
-                        tag_text = f":ref:`{repl_text}<class_{class_param}{ref_type}_{method_param}>`"
+                        repl_text = target_name
+                        if target_class_name != state.current_class:
+                            repl_text = f"{target_class_name}.{target_name}"
+                        tag_text = f":ref:`{repl_text}<class_{target_class_name}{ref_type}_{target_name}>`"
                         escape_pre = True
                         escape_post = True
 
-                    elif cmd.startswith("enum"):
-                        tag_text = make_enum(link_target, state)
+                    elif tag_state.name == "enum":
+                        tag_text = make_enum(link_target, False, state)
                         escape_pre = True
                         escape_post = True
 
-                    elif cmd.startswith("param"):
-                        valid_context = isinstance(context, (MethodDef, SignalDef, AnnotationDef))
-                        if not valid_context:
+                    elif tag_state.name == "param":
+                        valid_param_context = isinstance(context, (MethodDef, SignalDef, AnnotationDef))
+                        if not valid_param_context:
                             print_error(
                                 f'{state.current_class}.xml: Argument reference "{link_target}" used outside of method, signal, or annotation context in {context_name}.',
                                 state,
@@ -1480,11 +2042,17 @@ def format_text_block(
 
             # Formatting directives.
 
-            elif is_in_tagset(cmd, ["url"]):
-                if cmd.startswith("url="):
-                    # URLs are handled in full here as we need to extract the optional link
-                    # title to use `make_link`.
-                    link_url = cmd[4:]
+            elif is_in_tagset(tag_state.name, ["url"]):
+                url_target = tag_state.arguments[0] if len(tag_state.arguments) > 0 else ""
+
+                if url_target == "":
+                    print_error(
+                        f'{state.current_class}.xml: Misformatted [url] tag "[{tag_state.raw}]" in {context_name}.',
+                        state,
+                    )
+                else:
+                    # Unlike other tags, URLs are handled in full here, as we need to extract
+                    # the optional link title to use `make_link`.
                     endurl_pos = text.find("[/url]", endq_pos + 1)
                     if endurl_pos == -1:
                         print_error(
@@ -1493,7 +2061,7 @@ def format_text_block(
                         )
                         break
                     link_title = text[endq_pos + 1 : endurl_pos]
-                    tag_text = make_link(link_url, link_title)
+                    tag_text = make_link(url_target, link_title)
 
                     pre_text = text[:pos]
                     post_text = text[endurl_pos + 6 :]
@@ -1506,28 +2074,23 @@ def format_text_block(
                     text = pre_text + tag_text + post_text
                     pos = len(pre_text) + len(tag_text)
                     continue
-                else:
-                    print_error(
-                        f'{state.current_class}.xml: Misformatted [url] tag "{cmd}" in {context_name}.',
-                        state,
-                    )
 
-            elif cmd == "br":
+            elif tag_state.name == "br":
                 # Make a new paragraph instead of a linebreak, rst is not so linebreak friendly
                 tag_text = "\n\n"
                 # Strip potential leading spaces
                 while post_text[0] == " ":
                     post_text = post_text[1:]
 
-            elif cmd == "center" or cmd == "/center":
-                if cmd == "/center":
+            elif tag_state.name == "center":
+                if tag_state.closing:
                     tag_depth -= 1
                 else:
                     tag_depth += 1
                 tag_text = ""
 
-            elif cmd == "i" or cmd == "/i":
-                if cmd == "/i":
+            elif tag_state.name == "i":
+                if tag_state.closing:
                     tag_depth -= 1
                     escape_post = True
                 else:
@@ -1535,8 +2098,8 @@ def format_text_block(
                     escape_pre = True
                 tag_text = "*"
 
-            elif cmd == "b" or cmd == "/b":
-                if cmd == "/b":
+            elif tag_state.name == "b":
+                if tag_state.closing:
                     tag_depth -= 1
                     escape_post = True
                 else:
@@ -1544,8 +2107,8 @@ def format_text_block(
                     escape_pre = True
                 tag_text = "**"
 
-            elif cmd == "u" or cmd == "/u":
-                if cmd == "/u":
+            elif tag_state.name == "u":
+                if tag_state.closing:
                     tag_depth -= 1
                     escape_post = True
                 else:
@@ -1553,9 +2116,9 @@ def format_text_block(
                     escape_pre = True
                 tag_text = ""
 
-            elif cmd == "kbd" or cmd == "/kbd":
+            elif tag_state.name == "kbd":
                 tag_text = "`"
-                if cmd == "/kbd":
+                if tag_state.closing:
                     tag_depth -= 1
                     escape_post = True
                 else:
@@ -1563,18 +2126,24 @@ def format_text_block(
                     tag_depth += 1
                     escape_pre = True
 
-            # Invalid syntax checks.
-            elif cmd.startswith("/"):
-                print_error(f'{state.current_class}.xml: Unrecognized closing tag "{cmd}" in {context_name}.', state)
-
-                tag_text = f"[{tag_text}]"
-
+            # Invalid syntax.
             else:
-                print_error(f'{state.current_class}.xml: Unrecognized opening tag "{cmd}" in {context_name}.', state)
+                if tag_state.closing:
+                    print_error(
+                        f'{state.current_class}.xml: Unrecognized closing tag "[{tag_state.raw}]" in {context_name}.',
+                        state,
+                    )
 
-                tag_text = f"``{tag_text}``"
-                escape_pre = True
-                escape_post = True
+                    tag_text = f"[{tag_text}]"
+                else:
+                    print_error(
+                        f'{state.current_class}.xml: Unrecognized opening tag "[{tag_state.raw}]" in {context_name}.',
+                        state,
+                    )
+
+                    tag_text = f"``{tag_text}``"
+                    escape_pre = True
+                    escape_post = True
 
         # Properly escape things like `[Node]s`
         if escape_pre and pre_text and pre_text[-1] not in MARKUP_ALLOWED_PRECEDENT:
@@ -1656,13 +2225,22 @@ def escape_rst(text: str, until_pos: int = -1) -> str:
     return text
 
 
-def format_codeblock(code_type: str, post_text: str, indent_level: int, state: State) -> Union[Tuple[str, int], None]:
-    end_pos = post_text.find("[/" + code_type + "]")
+def format_codeblock(
+    tag_state: TagState, post_text: str, indent_level: int, state: State
+) -> Union[Tuple[str, int], None]:
+    end_pos = post_text.find("[/" + tag_state.name + "]")
     if end_pos == -1:
-        print_error(f"{state.current_class}.xml: [{code_type}] without a closing tag.", state)
+        print_error(
+            f"{state.current_class}.xml: Tag depth mismatch for [{tag_state.name}]: no closing [/{tag_state.name}].",
+            state,
+        )
         return None
 
-    code_text = post_text[len(f"[{code_type}]") : end_pos]
+    opening_formatted = tag_state.name
+    if len(tag_state.arguments) > 0:
+        opening_formatted += " " + " ".join(tag_state.arguments)
+
+    code_text = post_text[len(f"[{opening_formatted}]") : end_pos]
     post_text = post_text[end_pos:]
 
     # Remove extraneous tabs
@@ -1678,7 +2256,7 @@ def format_codeblock(code_type: str, post_text: str, indent_level: int, state: S
 
         if to_skip > indent_level:
             print_error(
-                f"{state.current_class}.xml: Four spaces should be used for indentation within [{code_type}].",
+                f"{state.current_class}.xml: Four spaces should be used for indentation within [{tag_state.name}].",
                 state,
             )
 
@@ -1688,13 +2266,18 @@ def format_codeblock(code_type: str, post_text: str, indent_level: int, state: S
         else:
             code_text = f"{code_text[:code_pos]}\n    {code_text[code_pos + to_skip + 1 :]}"
             code_pos += 5 - to_skip
-    return (f"\n[{code_type}]{code_text}{post_text}", len(f"\n[{code_type}]{code_text}"))
+    return (f"\n[{opening_formatted}]{code_text}{post_text}", len(f"\n[{opening_formatted}]{code_text}"))
 
 
 def format_table(f: TextIO, data: List[Tuple[Optional[str], ...]], remove_empty_columns: bool = False) -> None:
     if len(data) == 0:
         return
 
+    f.write(".. table::\n")
+    f.write("   :widths: auto\n\n")
+
+    # Calculate the width of each column first, we will use this information
+    # to properly format RST-style tables.
     column_sizes = [0] * len(data[0])
     for row in data:
         for i, text in enumerate(row):
@@ -1702,14 +2285,21 @@ def format_table(f: TextIO, data: List[Tuple[Optional[str], ...]], remove_empty_
             if text_length > column_sizes[i]:
                 column_sizes[i] = text_length
 
+    # Each table row is wrapped in two separators, consecutive rows share the same separator.
+    # All separators, or rather borders, have the same shape and content. We compose it once,
+    # then reuse it.
+
     sep = ""
     for size in column_sizes:
         if size == 0 and remove_empty_columns:
             continue
-        sep += "+" + "-" * (size + 2)
+        sep += "+" + "-" * (size + 2)  # Content of each cell is padded by 1 on each side.
     sep += "+\n"
-    f.write(sep)
 
+    # Draw the first separator.
+    f.write(f"   {sep}")
+
+    # Draw each row and close it with a separator.
     for row in data:
         row_text = "|"
         for i, text in enumerate(row):
@@ -1717,8 +2307,10 @@ def format_table(f: TextIO, data: List[Tuple[Optional[str], ...]], remove_empty_
                 continue
             row_text += f' {(text or "").ljust(column_sizes[i])} |'
         row_text += "\n"
-        f.write(row_text)
-        f.write(sep)
+
+        f.write(f"   {row_text}")
+        f.write(f"   {sep}")
+
     f.write("\n")
 
 
@@ -1778,25 +2370,6 @@ def sanitize_operator_name(dirty_name: str, state: State) -> str:
         print_error(f'Unsupported operator type "{dirty_name}", please add the missing rule.', state)
 
     return clear_name
-
-
-def indent_bullets(text: str) -> str:
-    # Take the text and check each line for a bullet point represented by "-".
-    # Where found, indent the given line by a further "\t".
-    # Used to properly indent bullet points contained in the description for enum values.
-    # Ignore the first line - text will be prepended to it so bullet points wouldn't work anyway.
-    bullet_points = "-"
-
-    lines = text.splitlines(keepends=True)
-    for line_index, line in enumerate(lines[1:], start=1):
-        pos = 0
-        while pos < len(line) and line[pos] == "\t":
-            pos += 1
-
-        if pos < len(line) and line[pos] in bullet_points:
-            lines[line_index] = f"{line[:pos]}\t{line[pos:]}"
-
-    return "".join(lines)
 
 
 if __name__ == "__main__":

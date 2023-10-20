@@ -193,7 +193,7 @@ def run_msbuild(tools: ToolsLocation, sln: str, msbuild_args: Optional[List[str]
     return subprocess.call(args, env=msbuild_env)
 
 
-def build_godot_api(msbuild_tool, module_dir, output_dir, push_nupkgs_local, float_size):
+def build_godot_api(msbuild_tool, module_dir, output_dir, push_nupkgs_local, precision):
     target_filenames = [
         "GodotSharp.dll",
         "GodotSharp.pdb",
@@ -214,7 +214,7 @@ def build_godot_api(msbuild_tool, module_dir, output_dir, push_nupkgs_local, flo
         args = ["/restore", "/t:Build", "/p:Configuration=" + build_config, "/p:NoWarn=1591"]
         if push_nupkgs_local:
             args += ["/p:ClearNuGetLocalCache=true", "/p:PushNuGetToLocalSource=" + push_nupkgs_local]
-        if float_size == "64":
+        if precision == "double":
             args += ["/p:GodotFloat64=true"]
 
         sln = os.path.join(module_dir, "glue/GodotSharp/GodotSharp.sln")
@@ -286,15 +286,29 @@ def generate_sdk_package_versions():
             version_status = version_status[:pos] + "." + version_status[pos:]
         version_str += "-" + version_status
 
+    import version
+
+    version_defines = (
+        [
+            f"GODOT{version.major}",
+            f"GODOT{version.major}_{version.minor}",
+            f"GODOT{version.major}_{version.minor}_{version.patch}",
+        ]
+        + [f"GODOT{v}_OR_GREATER" for v in range(4, version.major + 1)]
+        + [f"GODOT{version.major}_{v}_OR_GREATER" for v in range(0, version.minor + 1)]
+        + [f"GODOT{version.major}_{version.minor}_{v}_OR_GREATER" for v in range(0, version.patch + 1)]
+    )
+
     props = """<Project>
   <PropertyGroup>
     <PackageVersion_GodotSharp>{0}</PackageVersion_GodotSharp>
     <PackageVersion_Godot_NET_Sdk>{0}</PackageVersion_Godot_NET_Sdk>
     <PackageVersion_Godot_SourceGenerators>{0}</PackageVersion_Godot_SourceGenerators>
+    <GodotVersionConstants>{1}</GodotVersionConstants>
   </PropertyGroup>
 </Project>
 """.format(
-        version_str
+        version_str, ";".join(version_defines)
     )
 
     # We write in ../SdkPackageVersions.props.
@@ -302,13 +316,39 @@ def generate_sdk_package_versions():
         f.write(props)
         f.close()
 
+    # Also write the versioned docs URL to a constant for the Source Generators.
 
-def build_all(msbuild_tool, module_dir, output_dir, godot_platform, dev_debug, push_nupkgs_local, float_size):
-    # Generate SdkPackageVersions.props
+    constants = """namespace Godot.SourceGenerators
+{{
+    partial class Common
+    {{
+        public const string VersionDocsUrl = "https://docs.godotengine.org/en/{docs_branch}";
+    }}
+}}
+""".format(
+        **version_info
+    )
+
+    generators_dir = os.path.join(
+        dirname(script_path),
+        "editor",
+        "Godot.NET.Sdk",
+        "Godot.SourceGenerators",
+        "Generated",
+    )
+    os.makedirs(generators_dir, exist_ok=True)
+
+    with open(os.path.join(generators_dir, "Common.Constants.cs"), "w") as f:
+        f.write(constants)
+        f.close()
+
+
+def build_all(msbuild_tool, module_dir, output_dir, godot_platform, dev_debug, push_nupkgs_local, precision):
+    # Generate SdkPackageVersions.props and VersionDocsUrl constant
     generate_sdk_package_versions()
 
     # Godot API
-    exit_code = build_godot_api(msbuild_tool, module_dir, output_dir, push_nupkgs_local, float_size)
+    exit_code = build_godot_api(msbuild_tool, module_dir, output_dir, push_nupkgs_local, precision)
     if exit_code != 0:
         return exit_code
 
@@ -319,7 +359,7 @@ def build_all(msbuild_tool, module_dir, output_dir, godot_platform, dev_debug, p
     )
     if push_nupkgs_local:
         args += ["/p:ClearNuGetLocalCache=true", "/p:PushNuGetToLocalSource=" + push_nupkgs_local]
-    if float_size == "64":
+    if precision == "double":
         args += ["/p:GodotFloat64=true"]
     exit_code = run_msbuild(msbuild_tool, sln=sln, msbuild_args=args)
     if exit_code != 0:
@@ -329,7 +369,7 @@ def build_all(msbuild_tool, module_dir, output_dir, godot_platform, dev_debug, p
     args = ["/restore", "/t:Build", "/p:Configuration=Release"]
     if push_nupkgs_local:
         args += ["/p:ClearNuGetLocalCache=true", "/p:PushNuGetToLocalSource=" + push_nupkgs_local]
-    if float_size == "64":
+    if precision == "double":
         args += ["/p:GodotFloat64=true"]
     sln = os.path.join(module_dir, "editor/Godot.NET.Sdk/Godot.NET.Sdk.sln")
     exit_code = run_msbuild(msbuild_tool, sln=sln, msbuild_args=args)
@@ -354,7 +394,9 @@ def main():
     parser.add_argument("--godot-platform", type=str, default="")
     parser.add_argument("--mono-prefix", type=str, default="")
     parser.add_argument("--push-nupkgs-local", type=str, default="")
-    parser.add_argument("--float", type=str, default="32", choices=["32", "64"], help="Floating-point precision")
+    parser.add_argument(
+        "--precision", type=str, default="single", choices=["single", "double"], help="Floating-point precision level"
+    )
 
     args = parser.parse_args()
 
@@ -378,7 +420,7 @@ def main():
         args.godot_platform,
         args.dev_debug,
         push_nupkgs_local,
-        args.float,
+        args.precision,
     )
     sys.exit(exit_code)
 

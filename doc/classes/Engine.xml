@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<class name="Engine" inherits="Object" version="4.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+<class name="Engine" inherits="Object" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
 	<brief_description>
-		Access to engine properties.
+		Provides access to engine properties.
 	</brief_description>
 	<description>
 		The [Engine] singleton allows you to query and modify the project's run-time parameters, such as frames per second, time scale, and others.
@@ -12,20 +12,20 @@
 		<method name="get_architecture_name" qualifiers="const">
 			<return type="String" />
 			<description>
-				Returns the name of the CPU architecture the Godot binary was built for. Possible return values are [code]x86_64[/code], [code]x86_32[/code], [code]arm64[/code], [code]armv7[/code], [code]rv64[/code], [code]riscv[/code], [code]ppc64[/code], [code]ppc[/code], [code]wasm64[/code] and [code]wasm32[/code].
+				Returns the name of the CPU architecture the Godot binary was built for. Possible return values are [code]x86_64[/code], [code]x86_32[/code], [code]arm64[/code], [code]arm32[/code], [code]rv64[/code], [code]riscv[/code], [code]ppc64[/code], [code]ppc[/code], [code]wasm64[/code] and [code]wasm32[/code].
 				To detect whether the current CPU architecture is 64-bit, you can use the fact that all 64-bit architecture names have [code]64[/code] in their name:
 				[codeblocks]
 				[gdscript]
 				if "64" in Engine.get_architecture_name():
-				    print("Running on 64-bit CPU.")
+				    print("Running a 64-bit build of Godot.")
 				else:
-				    print("Running on 32-bit CPU.")
+				    print("Running a 32-bit build of Godot.")
 				[/gdscript]
 				[csharp]
 				if (Engine.GetArchitectureName().Contains("64"))
-				    GD.Print("Running on 64-bit CPU.");
+				    GD.Print("Running a 64-bit build of Godot.");
 				else
-				    GD.Print("Running on 32-bit CPU.");
+				    GD.Print("Running a 32-bit build of Godot.");
 				[/csharp]
 				[/codeblocks]
 				[b]Note:[/b] [method get_architecture_name] does [i]not[/i] return the name of the host CPU architecture. For example, if running an x86_32 Godot binary on a x86_64 system, the returned value will be [code]x86_32[/code].
@@ -244,10 +244,14 @@
 			</description>
 		</method>
 		<method name="register_script_language">
-			<return type="void" />
+			<return type="int" enum="Error" />
 			<param index="0" name="language" type="ScriptLanguage" />
 			<description>
 				Registers a [ScriptLanguage] instance to be available with [code]ScriptServer[/code].
+				Returns:
+				- [constant OK] on success
+				- [constant ERR_UNAVAILABLE] if [code]ScriptServer[/code] has reached it limit and cannot register any new language
+				- [constant ERR_ALREADY_EXISTS] if [code]ScriptServer[/code] already contains a language with similar extension/name/type
 			</description>
 		</method>
 		<method name="register_singleton">
@@ -256,6 +260,16 @@
 			<param index="1" name="instance" type="Object" />
 			<description>
 				Registers the given object as a singleton, globally available under [param name].
+			</description>
+		</method>
+		<method name="unregister_script_language">
+			<return type="int" enum="Error" />
+			<param index="0" name="language" type="ScriptLanguage" />
+			<description>
+				Unregisters the [ScriptLanguage] instance from [code]ScriptServer[/code].
+				Returns:
+				- [constant OK] on success
+				- [constant ERR_DOES_NOT_EXIST] if the language is already not registered in [code]ScriptServer[/code]
 			</description>
 		</method>
 		<method name="unregister_singleton">
@@ -275,13 +289,16 @@
 			If [member ProjectSettings.display/window/vsync/vsync_mode] is [code]Disabled[/code], limiting the FPS to a high value that can be consistently reached on the system can reduce input lag compared to an uncapped framerate. Since this works by ensuring the GPU load is lower than 100%, this latency reduction is only effective in GPU-bottlenecked scenarios, not CPU-bottlenecked scenarios.
 			See also [member physics_ticks_per_second] and [member ProjectSettings.application/run/max_fps].
 		</member>
+		<member name="max_physics_steps_per_frame" type="int" setter="set_max_physics_steps_per_frame" getter="get_max_physics_steps_per_frame" default="8">
+			Controls the maximum number of physics steps that can be simulated each rendered frame. The default value is tuned to avoid "spiral of death" situations where expensive physics simulations trigger more expensive simulations indefinitely. However, the game will appear to slow down if the rendering FPS is less than [code]1 / max_physics_steps_per_frame[/code] of [member physics_ticks_per_second]. This occurs even if [code]delta[/code] is consistently used in physics calculations. To avoid this, increase [member max_physics_steps_per_frame] if you have increased [member physics_ticks_per_second] significantly above its default value.
+		</member>
 		<member name="physics_jitter_fix" type="float" setter="set_physics_jitter_fix" getter="get_physics_jitter_fix" default="0.5">
 			Controls how much physics ticks are synchronized with real time. For 0 or less, the ticks are synchronized. Such values are recommended for network games, where clock synchronization matters. Higher values cause higher deviation of the in-game clock and real clock but smooth out framerate jitters. The default value of 0.5 should be fine for most; values above 2 could cause the game to react to dropped frames with a noticeable delay and are not recommended.
 			[b]Note:[/b] For best results, when using a custom physics interpolation solution, the physics jitter fix should be disabled by setting [member physics_jitter_fix] to [code]0[/code].
 		</member>
 		<member name="physics_ticks_per_second" type="int" setter="set_physics_ticks_per_second" getter="get_physics_ticks_per_second" default="60">
 			The number of fixed iterations per second. This controls how often physics simulation and [method Node._physics_process] methods are run. This value should generally always be set to [code]60[/code] or above, as Godot doesn't interpolate the physics step. As a result, values lower than [code]60[/code] will look stuttery. This value can be increased to make input more reactive or work around collision tunneling issues, but keep in mind doing so will increase CPU usage. See also [member max_fps] and [member ProjectSettings.physics/common/physics_ticks_per_second].
-			[b]Note:[/b] Only 8 physics ticks may be simulated per rendered frame at most. If more than 8 physics ticks have to be simulated per rendered frame to keep up with rendering, the game will appear to slow down (even if [code]delta[/code] is used consistently in physics calculations). Therefore, it is recommended not to increase [member physics_ticks_per_second] above 240. Otherwise, the game will slow down when the rendering framerate goes below 30 FPS.
+			[b]Note:[/b] Only [member max_physics_steps_per_frame] physics ticks may be simulated per rendered frame at most. If more physics ticks have to be simulated per rendered frame to keep up with rendering, the project will appear to slow down (even if [code]delta[/code] is used consistently in physics calculations). Therefore, it is recommended to also increase [member max_physics_steps_per_frame] if increasing [member physics_ticks_per_second] significantly above its default value.
 		</member>
 		<member name="print_error_messages" type="bool" setter="set_print_error_messages" getter="is_printing_error_messages" default="true">
 			If [code]false[/code], stops printing error and warning messages to the console and editor Output log. This can be used to hide error and warning messages during unit test suite runs. This property is equivalent to the [member ProjectSettings.application/run/disable_stderr] project setting.
@@ -289,7 +306,7 @@
 			[b]Note:[/b] This property does not impact the editor's Errors tab when running a project from the editor.
 		</member>
 		<member name="time_scale" type="float" setter="set_time_scale" getter="get_time_scale" default="1.0">
-			Controls how fast or slow the in-game clock ticks versus the real life one. It defaults to 1.0. A value of 2.0 means the game moves twice as fast as real life, whilst a value of 0.5 means the game moves at half the regular speed.
+			Controls how fast or slow the in-game clock ticks versus the real life one. It defaults to 1.0. A value of 2.0 means the game moves twice as fast as real life, whilst a value of 0.5 means the game moves at half the regular speed. This also affects [Timer] and [SceneTreeTimer] (see [method SceneTree.create_timer] for how to control this).
 		</member>
 	</members>
 </class>

@@ -1,32 +1,32 @@
-/*************************************************************************/
-/*  godot_window_delegate.mm                                             */
-/*************************************************************************/
-/*                       This file is part of:                           */
-/*                           GODOT ENGINE                                */
-/*                      https://godotengine.org                          */
-/*************************************************************************/
-/* Copyright (c) 2007-2022 Juan Linietsky, Ariel Manzur.                 */
-/* Copyright (c) 2014-2022 Godot Engine contributors (cf. AUTHORS.md).   */
-/*                                                                       */
-/* Permission is hereby granted, free of charge, to any person obtaining */
-/* a copy of this software and associated documentation files (the       */
-/* "Software"), to deal in the Software without restriction, including   */
-/* without limitation the rights to use, copy, modify, merge, publish,   */
-/* distribute, sublicense, and/or sell copies of the Software, and to    */
-/* permit persons to whom the Software is furnished to do so, subject to */
-/* the following conditions:                                             */
-/*                                                                       */
-/* The above copyright notice and this permission notice shall be        */
-/* included in all copies or substantial portions of the Software.       */
-/*                                                                       */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,       */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF    */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.*/
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY  */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,  */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE     */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
-/*************************************************************************/
+/**************************************************************************/
+/*  godot_window_delegate.mm                                              */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
 #include "godot_window_delegate.h"
 
@@ -67,27 +67,28 @@
 		ds->window_set_transient(window_id, DisplayServerMacOS::INVALID_WINDOW_ID);
 	}
 
+	ds->mouse_exit_window(window_id);
 	ds->window_destroy(window_id);
 }
 
-- (NSArray<NSWindow *> *)customWindowsToEnterFullScreenForWindow:(NSWindow *)window {
+- (void)windowWillEnterFullScreen:(NSNotification *)notification {
 	DisplayServerMacOS *ds = (DisplayServerMacOS *)DisplayServer::get_singleton();
 	if (!ds || !ds->has_window(window_id)) {
-		return nullptr;
+		return;
 	}
 
-	old_frame = [window frame];
-	old_style_mask = [window styleMask];
-
-	NSMutableArray<NSWindow *> *windows = [[NSMutableArray alloc] init];
-	[windows addObject:window];
-
-	return windows;
+	DisplayServerMacOS::WindowData &wd = ds->get_window(window_id);
+	wd.fs_transition = true;
 }
 
-- (void)window:(NSWindow *)window startCustomAnimationToEnterFullScreenWithDuration:(NSTimeInterval)duration {
-	[(GodotWindow *)window setAnimDuration:duration];
-	[window setFrame:[[window screen] frame] display:YES animate:YES];
+- (void)windowDidFailToEnterFullScreen:(NSWindow *)window {
+	DisplayServerMacOS *ds = (DisplayServerMacOS *)DisplayServer::get_singleton();
+	if (!ds || !ds->has_window(window_id)) {
+		return;
+	}
+
+	DisplayServerMacOS::WindowData &wd = ds->get_window(window_id);
+	wd.fs_transition = false;
 }
 
 - (void)windowDidEnterFullScreen:(NSNotification *)notification {
@@ -98,29 +99,31 @@
 
 	DisplayServerMacOS::WindowData &wd = ds->get_window(window_id);
 	wd.fullscreen = true;
+	wd.fs_transition = false;
 
 	// Reset window size limits.
 	[wd.window_object setContentMinSize:NSMakeSize(0, 0)];
 	[wd.window_object setContentMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
-	[(GodotWindow *)wd.window_object setAnimDuration:-1.0f];
 
 	// Reset custom window buttons.
 	if ([wd.window_object styleMask] & NSWindowStyleMaskFullSizeContentView) {
 		ds->window_set_custom_window_buttons(wd, false);
 	}
 
-	// Force window resize event.
-	[self windowDidResize:notification];
 	ds->send_window_event(wd, DisplayServerMacOS::WINDOW_EVENT_TITLEBAR_CHANGE);
+
+	// Force window resize event and redraw.
+	[self windowDidResize:notification];
 }
 
-- (NSArray<NSWindow *> *)customWindowsToExitFullScreenForWindow:(NSWindow *)window {
+- (void)windowWillExitFullScreen:(NSNotification *)notification {
 	DisplayServerMacOS *ds = (DisplayServerMacOS *)DisplayServer::get_singleton();
 	if (!ds || !ds->has_window(window_id)) {
-		return nullptr;
+		return;
 	}
 
 	DisplayServerMacOS::WindowData &wd = ds->get_window(window_id);
+	wd.fs_transition = true;
 
 	// Restore custom window buttons.
 	if ([wd.window_object styleMask] & NSWindowStyleMaskFullSizeContentView) {
@@ -128,16 +131,22 @@
 	}
 
 	ds->send_window_event(wd, DisplayServerMacOS::WINDOW_EVENT_TITLEBAR_CHANGE);
-
-	NSMutableArray<NSWindow *> *windows = [[NSMutableArray alloc] init];
-	[windows addObject:wd.window_object];
-	return windows;
 }
 
-- (void)window:(NSWindow *)window startCustomAnimationToExitFullScreenWithDuration:(NSTimeInterval)duration {
-	[(GodotWindow *)window setAnimDuration:duration];
-	[window setStyleMask:old_style_mask];
-	[window setFrame:old_frame display:YES animate:YES];
+- (void)windowDidFailToExitFullScreen:(NSWindow *)window {
+	DisplayServerMacOS *ds = (DisplayServerMacOS *)DisplayServer::get_singleton();
+	if (!ds || !ds->has_window(window_id)) {
+		return;
+	}
+
+	DisplayServerMacOS::WindowData &wd = ds->get_window(window_id);
+	wd.fs_transition = false;
+
+	if ([wd.window_object styleMask] & NSWindowStyleMaskFullSizeContentView) {
+		ds->window_set_custom_window_buttons(wd, false);
+	}
+
+	ds->send_window_event(wd, DisplayServerMacOS::WINDOW_EVENT_TITLEBAR_CHANGE);
 }
 
 - (void)windowDidExitFullScreen:(NSNotification *)notification {
@@ -147,9 +156,13 @@
 	}
 
 	DisplayServerMacOS::WindowData &wd = ds->get_window(window_id);
-	wd.fullscreen = false;
+	if (wd.exclusive_fullscreen) {
+		ds->update_presentation_mode();
+	}
 
-	[(GodotWindow *)wd.window_object setAnimDuration:-1.0f];
+	wd.fullscreen = false;
+	wd.exclusive_fullscreen = false;
+	wd.fs_transition = false;
 
 	// Set window size limits.
 	const float scale = ds->screen_get_max_scale();
@@ -172,7 +185,7 @@
 		[wd.window_object setLevel:NSFloatingWindowLevel];
 	}
 
-	// Force window resize event.
+	// Force window resize event and redraw.
 	[self windowDidResize:notification];
 }
 
@@ -243,12 +256,17 @@
 	ds->window_resize(window_id, wd.size.width, wd.size.height);
 
 	if (!wd.rect_changed_callback.is_null()) {
-		Variant size = Rect2i(ds->window_get_position(window_id), ds->window_get_size(window_id));
-		Variant *sizep = &size;
-		Variant ret;
-		Callable::CallError ce;
-		wd.rect_changed_callback.callp((const Variant **)&sizep, 1, ret, ce);
+		wd.rect_changed_callback.call(Rect2i(ds->window_get_position(window_id), ds->window_get_size(window_id)));
 	}
+}
+
+- (void)windowDidChangeScreen:(NSNotification *)notification {
+	DisplayServerMacOS *ds = (DisplayServerMacOS *)DisplayServer::get_singleton();
+	if (!ds || !ds->has_window(window_id)) {
+		return;
+	}
+
+	ds->reparent_check(window_id);
 }
 
 - (void)windowDidMove:(NSNotification *)notification {
@@ -261,11 +279,7 @@
 	ds->release_pressed_events();
 
 	if (!wd.rect_changed_callback.is_null()) {
-		Variant size = Rect2i(ds->window_get_position(window_id), ds->window_get_size(window_id));
-		Variant *sizep = &size;
-		Variant ret;
-		Callable::CallError ce;
-		wd.rect_changed_callback.callp((const Variant **)&sizep, 1, ret, ce);
+		wd.rect_changed_callback.call(Rect2i(ds->window_get_position(window_id), ds->window_get_size(window_id)));
 	}
 }
 
@@ -291,6 +305,9 @@
 		ds->update_mouse_pos(wd, [wd.window_object mouseLocationOutsideOfEventStream]);
 	}
 
+	[self windowDidResize:notification]; // Emit resize event, to ensure content is resized if the window was resized while it was hidden.
+
+	wd.focused = true;
 	ds->set_last_focused_window(window_id);
 	ds->send_window_event(wd, DisplayServerMacOS::WINDOW_EVENT_FOCUS_IN);
 }
@@ -307,6 +324,7 @@
 		[(GodotButtonView *)wd.window_button_view displayButtons];
 	}
 
+	wd.focused = false;
 	ds->release_pressed_events();
 	ds->send_window_event(wd, DisplayServerMacOS::WINDOW_EVENT_FOCUS_OUT);
 }
@@ -319,6 +337,7 @@
 
 	DisplayServerMacOS::WindowData &wd = ds->get_window(window_id);
 
+	wd.focused = false;
 	ds->release_pressed_events();
 	ds->send_window_event(wd, DisplayServerMacOS::WINDOW_EVENT_FOCUS_OUT);
 }
@@ -330,9 +349,20 @@
 	}
 
 	DisplayServerMacOS::WindowData &wd = ds->get_window(window_id);
+	if ([wd.window_object isKeyWindow]) {
+		wd.focused = true;
+		ds->set_last_focused_window(window_id);
+		ds->send_window_event(wd, DisplayServerMacOS::WINDOW_EVENT_FOCUS_IN);
+	}
+}
 
-	ds->set_last_focused_window(window_id);
-	ds->send_window_event(wd, DisplayServerMacOS::WINDOW_EVENT_FOCUS_IN);
+- (void)windowDidChangeOcclusionState:(NSNotification *)notification {
+	DisplayServerMacOS *ds = (DisplayServerMacOS *)DisplayServer::get_singleton();
+	if (!ds || !ds->has_window(window_id)) {
+		return;
+	}
+	DisplayServerMacOS::WindowData &wd = ds->get_window(window_id);
+	wd.is_visible = ([wd.window_object occlusionState] & NSWindowOcclusionStateVisible) && [wd.window_object isVisible];
 }
 
 @end

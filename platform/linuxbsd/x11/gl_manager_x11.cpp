@@ -1,50 +1,50 @@
-/*************************************************************************/
-/*  gl_manager_x11.cpp                                                   */
-/*************************************************************************/
-/*                       This file is part of:                           */
-/*                           GODOT ENGINE                                */
-/*                      https://godotengine.org                          */
-/*************************************************************************/
-/* Copyright (c) 2007-2022 Juan Linietsky, Ariel Manzur.                 */
-/* Copyright (c) 2014-2022 Godot Engine contributors (cf. AUTHORS.md).   */
-/*                                                                       */
-/* Permission is hereby granted, free of charge, to any person obtaining */
-/* a copy of this software and associated documentation files (the       */
-/* "Software"), to deal in the Software without restriction, including   */
-/* without limitation the rights to use, copy, modify, merge, publish,   */
-/* distribute, sublicense, and/or sell copies of the Software, and to    */
-/* permit persons to whom the Software is furnished to do so, subject to */
-/* the following conditions:                                             */
-/*                                                                       */
-/* The above copyright notice and this permission notice shall be        */
-/* included in all copies or substantial portions of the Software.       */
-/*                                                                       */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,       */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF    */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.*/
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY  */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,  */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE     */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
-/*************************************************************************/
+/**************************************************************************/
+/*  gl_manager_x11.cpp                                                    */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
 #include "gl_manager_x11.h"
 
-#ifdef X11_ENABLED
-#if defined(GLES3_ENABLED)
+#if defined(X11_ENABLED) && defined(GLES3_ENABLED)
+
+#include "thirdparty/glad/glad/glx.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
-#define GLX_GLXEXT_PROTOTYPES
-#include <GL/glx.h>
-#include <GL/glxext.h>
-
 #define GLX_CONTEXT_MAJOR_VERSION_ARB 0x2091
 #define GLX_CONTEXT_MINOR_VERSION_ARB 0x2092
 
 typedef GLXContext (*GLXCREATECONTEXTATTRIBSARBPROC)(Display *, GLXFBConfig, GLXContext, Bool, const int *);
+
+// To prevent shadowing warnings
+#undef glXCreateContextAttribsARB
 
 struct GLManager_X11_Private {
 	::GLXContext glx_context;
@@ -85,8 +85,13 @@ int GLManager_X11::_find_or_create_display(Display *p_x11_display) {
 	d.context = memnew(GLManager_X11_Private);
 	d.context->glx_context = nullptr;
 
-	//Error err = _create_context(d);
-	_create_context(d);
+	Error err = _create_context(d);
+
+	if (err != OK) {
+		_displays.remove_at(new_display_id);
+		return -1;
+	}
+
 	return new_display_id;
 }
 
@@ -98,7 +103,7 @@ Error GLManager_X11::_create_context(GLDisplay &gl_display) {
 
 	GLXCREATECONTEXTATTRIBSARBPROC glXCreateContextAttribsARB = (GLXCREATECONTEXTATTRIBSARBPROC)glXGetProcAddress((const GLubyte *)"glXCreateContextAttribsARB");
 
-	ERR_FAIL_COND_V(!glXCreateContextAttribsARB, ERR_UNCONFIGURED);
+	ERR_FAIL_NULL_V(glXCreateContextAttribsARB, ERR_UNCONFIGURED);
 
 	static int visual_attribs[] = {
 		GLX_RENDER_TYPE, GLX_RGBA_BIT,
@@ -129,7 +134,7 @@ Error GLManager_X11::_create_context(GLDisplay &gl_display) {
 
 	if (OS::get_singleton()->is_layered_allowed()) {
 		GLXFBConfig *fbc = glXChooseFBConfig(x11_display, DefaultScreen(x11_display), visual_attribs_layered, &fbcount);
-		ERR_FAIL_COND_V(!fbc, ERR_UNCONFIGURED);
+		ERR_FAIL_NULL_V(fbc, ERR_UNCONFIGURED);
 
 		for (int i = 0; i < fbcount; i++) {
 			vi = (XVisualInfo *)glXGetVisualFromFBConfig(x11_display, fbc[i]);
@@ -151,10 +156,10 @@ Error GLManager_X11::_create_context(GLDisplay &gl_display) {
 		}
 		XFree(fbc);
 
-		ERR_FAIL_COND_V(!fbconfig, ERR_UNCONFIGURED);
+		ERR_FAIL_NULL_V(fbconfig, ERR_UNCONFIGURED);
 	} else {
 		GLXFBConfig *fbc = glXChooseFBConfig(x11_display, DefaultScreen(x11_display), visual_attribs, &fbcount);
-		ERR_FAIL_COND_V(!fbc, ERR_UNCONFIGURED);
+		ERR_FAIL_NULL_V(fbc, ERR_UNCONFIGURED);
 
 		vi = glXGetVisualFromFBConfig(x11_display, fbc[0]);
 
@@ -193,8 +198,14 @@ Error GLManager_X11::_create_context(GLDisplay &gl_display) {
 	return OK;
 }
 
-XVisualInfo GLManager_X11::get_vi(Display *p_display) {
-	return _displays[_find_or_create_display(p_display)].x_vi;
+XVisualInfo GLManager_X11::get_vi(Display *p_display, Error &r_error) {
+	int display_id = _find_or_create_display(p_display);
+	if (display_id < 0) {
+		r_error = FAILED;
+		return XVisualInfo();
+	}
+	r_error = OK;
+	return _displays[display_id].x_vi;
 }
 
 Error GLManager_X11::window_create(DisplayServer::WindowID p_window_id, ::Window p_window, Display *p_display, int p_width, int p_height) {
@@ -212,6 +223,10 @@ Error GLManager_X11::window_create(DisplayServer::WindowID p_window_id, ::Window
 	win.height = p_height;
 	win.x11_window = p_window;
 	win.gldisplay_id = _find_or_create_display(p_display);
+
+	if (win.gldisplay_id == -1) {
+		return FAILED;
+	}
 
 	// the display could be invalid .. check NYI
 	GLDisplay &gl_display = _displays[win.gldisplay_id];
@@ -323,50 +338,31 @@ void GLManager_X11::swap_buffers() {
 	glXSwapBuffers(_x_windisp.x11_display, _x_windisp.x11_window);
 }
 
-Error GLManager_X11::initialize() {
+Error GLManager_X11::initialize(Display *p_display) {
+	if (!gladLoaderLoadGLX(p_display, XScreenNumberOfScreen(XDefaultScreenOfDisplay(p_display)))) {
+		return ERR_CANT_CREATE;
+	}
+
 	return OK;
 }
 
 void GLManager_X11::set_use_vsync(bool p_use) {
-	static bool setup = false;
-	static PFNGLXSWAPINTERVALEXTPROC glXSwapIntervalEXT = nullptr;
-	static PFNGLXSWAPINTERVALSGIPROC glXSwapIntervalMESA = nullptr;
-	static PFNGLXSWAPINTERVALSGIPROC glXSwapIntervalSGI = nullptr;
-
-	// force vsync in the editor for now, as a safety measure
-	bool is_editor = Engine::get_singleton()->is_editor_hint();
-	if (is_editor) {
-		p_use = true;
-	}
-
 	// we need an active window to get a display to set the vsync
 	if (!_current_window) {
 		return;
 	}
 	const GLDisplay &disp = get_current_display();
 
-	if (!setup) {
-		setup = true;
-		String extensions = glXQueryExtensionsString(disp.x11_display, DefaultScreen(disp.x11_display));
-		if (extensions.find("GLX_EXT_swap_control") != -1) {
-			glXSwapIntervalEXT = (PFNGLXSWAPINTERVALEXTPROC)glXGetProcAddressARB((const GLubyte *)"glXSwapIntervalEXT");
-		}
-		if (extensions.find("GLX_MESA_swap_control") != -1) {
-			glXSwapIntervalMESA = (PFNGLXSWAPINTERVALSGIPROC)glXGetProcAddressARB((const GLubyte *)"glXSwapIntervalMESA");
-		}
-		if (extensions.find("GLX_SGI_swap_control") != -1) {
-			glXSwapIntervalSGI = (PFNGLXSWAPINTERVALSGIPROC)glXGetProcAddressARB((const GLubyte *)"glXSwapIntervalSGI");
-		}
-	}
 	int val = p_use ? 1 : 0;
-	if (glXSwapIntervalMESA) {
+	if (GLAD_GLX_MESA_swap_control) {
 		glXSwapIntervalMESA(val);
-	} else if (glXSwapIntervalSGI) {
+	} else if (GLAD_GLX_SGI_swap_control) {
 		glXSwapIntervalSGI(val);
-	} else if (glXSwapIntervalEXT) {
+	} else if (GLAD_GLX_EXT_swap_control) {
 		GLXDrawable drawable = glXGetCurrentDrawable();
 		glXSwapIntervalEXT(disp.x11_display, drawable, val);
 	} else {
+		WARN_PRINT("Could not set V-Sync mode. V-Sync is not supported.");
 		return;
 	}
 	use_vsync = p_use;
@@ -374,6 +370,17 @@ void GLManager_X11::set_use_vsync(bool p_use) {
 
 bool GLManager_X11::is_using_vsync() const {
 	return use_vsync;
+}
+
+void *GLManager_X11::get_glx_context(DisplayServer::WindowID p_window_id) {
+	if (p_window_id == -1) {
+		return nullptr;
+	}
+
+	const GLWindow &win = _windows[p_window_id];
+	const GLDisplay &disp = get_display(win.gldisplay_id);
+
+	return (void *)disp.context->glx_context;
 }
 
 GLManager_X11::GLManager_X11(const Vector2i &p_size, ContextType p_context_type) {
@@ -390,5 +397,4 @@ GLManager_X11::~GLManager_X11() {
 	release_current();
 }
 
-#endif
-#endif
+#endif // X11_ENABLED && GLES3_ENABLED

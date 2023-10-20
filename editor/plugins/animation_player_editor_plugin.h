@@ -1,32 +1,32 @@
-/*************************************************************************/
-/*  animation_player_editor_plugin.h                                     */
-/*************************************************************************/
-/*                       This file is part of:                           */
-/*                           GODOT ENGINE                                */
-/*                      https://godotengine.org                          */
-/*************************************************************************/
-/* Copyright (c) 2007-2022 Juan Linietsky, Ariel Manzur.                 */
-/* Copyright (c) 2014-2022 Godot Engine contributors (cf. AUTHORS.md).   */
-/*                                                                       */
-/* Permission is hereby granted, free of charge, to any person obtaining */
-/* a copy of this software and associated documentation files (the       */
-/* "Software"), to deal in the Software without restriction, including   */
-/* without limitation the rights to use, copy, modify, merge, publish,   */
-/* distribute, sublicense, and/or sell copies of the Software, and to    */
-/* permit persons to whom the Software is furnished to do so, subject to */
-/* the following conditions:                                             */
-/*                                                                       */
-/* The above copyright notice and this permission notice shall be        */
-/* included in all copies or substantial portions of the Software.       */
-/*                                                                       */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,       */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF    */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.*/
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY  */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,  */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE     */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
-/*************************************************************************/
+/**************************************************************************/
+/*  animation_player_editor_plugin.h                                      */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
 #ifndef ANIMATION_PLAYER_EDITOR_PLUGIN_H
 #define ANIMATION_PLAYER_EDITOR_PLUGIN_H
@@ -42,12 +42,17 @@
 #include "scene/gui/tree.h"
 
 class AnimationPlayerEditorPlugin;
+class ImageTexture;
 
 class AnimationPlayerEditor : public VBoxContainer {
 	GDCLASS(AnimationPlayerEditor, VBoxContainer);
 
+	friend AnimationPlayerEditorPlugin;
+
 	AnimationPlayerEditorPlugin *plugin = nullptr;
-	AnimationPlayer *player = nullptr;
+	AnimationMixer *original_node = nullptr; // For pinned mark in SceneTree.
+	AnimationPlayer *player = nullptr; // For AnimationPlayerEditor, could be dummy.
+	bool is_dummy = false;
 
 	enum {
 		TOOL_NEW_ANIM,
@@ -101,6 +106,8 @@ class AnimationPlayerEditor : public VBoxContainer {
 	OptionButton *library = nullptr;
 	Label *name_title = nullptr;
 
+	Ref<Texture2D> stop_icon;
+	Ref<Texture2D> pause_icon;
 	Ref<Texture2D> autoplay_icon;
 	Ref<Texture2D> reset_icon;
 	Ref<ImageTexture> autoplay_reset_icon;
@@ -129,20 +136,18 @@ class AnimationPlayerEditor : public VBoxContainer {
 	AnimationTrackEditor *track_editor = nullptr;
 	static AnimationPlayerEditor *singleton;
 
-	bool hack_disable_onion_skinning = true; // Temporary hack for GH-53870.
-
 	// Onion skinning.
 	struct {
 		// Settings.
 		bool enabled = false;
-		bool past = false;
+		bool past = true;
 		bool future = false;
-		int steps = 0;
+		uint32_t steps = 1;
 		bool differences_only = false;
 		bool force_white_modulate = false;
 		bool include_gizmos = false;
 
-		int get_needed_capture_count() const {
+		uint32_t get_capture_count() const {
 			// 'Differences only' needs a capture of the present.
 			return (past && future ? 2 * steps : steps) + (differences_only ? 1 : 0);
 		}
@@ -151,18 +156,27 @@ class AnimationPlayerEditor : public VBoxContainer {
 		int64_t last_frame = 0;
 		int can_overlay = 0;
 		Size2 capture_size;
-		Vector<RID> captures;
-		Vector<bool> captures_valid;
+		LocalVector<RID> captures;
+		LocalVector<bool> captures_valid;
 		struct {
 			RID canvas;
 			RID canvas_item;
 			Ref<ShaderMaterial> material;
 			Ref<Shader> shader;
 		} capture;
+
+		// Cross-call state.
+		struct {
+			double anim_player_position = 0.0;
+			Ref<AnimatedValuesBackup> anim_values_backup;
+			Rect2 screen_rect;
+			Dictionary canvas_edit_state;
+			Dictionary spatial_edit_state;
+		} temp;
 	} onion;
 
 	void _select_anim_by_name(const String &p_anim);
-	double _get_editor_step() const;
+	float _get_editor_step() const;
 	void _play_pressed();
 	void _play_from_pressed();
 	void _play_bw_pressed();
@@ -186,6 +200,7 @@ class AnimationPlayerEditor : public VBoxContainer {
 	void _blend_editor_next_changed(const int p_idx);
 
 	void _list_changed();
+	void _current_animation_changed(const String &p_name);
 	void _update_animation();
 	void _update_player();
 	void _update_animation_list_icons();
@@ -207,13 +222,19 @@ class AnimationPlayerEditor : public VBoxContainer {
 	void _allocate_onion_layers();
 	void _free_onion_layers();
 	void _prepare_onion_layers_1();
-	void _prepare_onion_layers_1_deferred();
-	void _prepare_onion_layers_2();
+	void _prepare_onion_layers_2_prolog();
+	void _prepare_onion_layers_2_step_prepare(int p_step_offset, uint32_t p_capture_idx);
+	void _prepare_onion_layers_2_step_capture(int p_step_offset, uint32_t p_capture_idx);
+	void _prepare_onion_layers_2_epilog();
 	void _start_onion_skinning();
 	void _stop_onion_skinning();
 
+	bool _validate_tracks(const Ref<Animation> p_anim);
+
 	void _pin_pressed();
 	String _get_current() const;
+
+	void _ensure_dummy_player();
 
 	~AnimationPlayerEditor();
 
@@ -223,19 +244,24 @@ protected:
 	static void _bind_methods();
 
 public:
+	AnimationMixer *get_editing_node() const;
 	AnimationPlayer *get_player() const;
+	AnimationMixer *fetch_mixer_for_library() const;
 
 	static AnimationPlayerEditor *get_singleton() { return singleton; }
 
 	bool is_pinned() const { return pin->is_pressed(); }
-	void unpin() { pin->set_pressed(false); }
+	void unpin() {
+		pin->set_pressed(false);
+		_pin_pressed();
+	}
 	AnimationTrackEditor *get_track_editor() { return track_editor; }
 	Dictionary get_state() const;
 	void set_state(const Dictionary &p_state);
 
 	void ensure_visibility();
 
-	void edit(AnimationPlayer *p_player);
+	void edit(AnimationMixer *p_node, AnimationPlayer *p_player, bool p_is_dummy);
 	void forward_force_draw_over_viewport(Control *p_overlay);
 
 	AnimationPlayerEditor(AnimationPlayerEditorPlugin *p_plugin);
@@ -244,7 +270,15 @@ public:
 class AnimationPlayerEditorPlugin : public EditorPlugin {
 	GDCLASS(AnimationPlayerEditorPlugin, EditorPlugin);
 
+	friend AnimationPlayerEditor;
+
 	AnimationPlayerEditor *anim_editor = nullptr;
+	AnimationPlayer *player = nullptr;
+	AnimationPlayer *dummy_player = nullptr;
+	ObjectID last_mixer;
+
+	void _update_dummy_player(AnimationMixer *p_mixer);
+	void _clear_dummy_player();
 
 protected:
 	void _notification(int p_what);
@@ -268,6 +302,32 @@ public:
 
 	AnimationPlayerEditorPlugin();
 	~AnimationPlayerEditorPlugin();
+};
+
+// AnimationTrackKeyEditEditorPlugin
+
+class EditorInspectorPluginAnimationTrackKeyEdit : public EditorInspectorPlugin {
+	GDCLASS(EditorInspectorPluginAnimationTrackKeyEdit, EditorInspectorPlugin);
+
+	AnimationTrackKeyEditEditor *atk_editor = nullptr;
+
+public:
+	virtual bool can_handle(Object *p_object) override;
+	virtual void parse_begin(Object *p_object) override;
+};
+
+class AnimationTrackKeyEditEditorPlugin : public EditorPlugin {
+	GDCLASS(AnimationTrackKeyEditEditorPlugin, EditorPlugin);
+
+	EditorInspectorPluginAnimationTrackKeyEdit *atk_plugin = nullptr;
+
+public:
+	bool has_main_screen() const override { return false; }
+	virtual bool handles(Object *p_object) const override;
+
+	virtual String get_name() const override { return "AnimationTrackKeyEdit"; }
+
+	AnimationTrackKeyEditEditorPlugin();
 };
 
 #endif // ANIMATION_PLAYER_EDITOR_PLUGIN_H

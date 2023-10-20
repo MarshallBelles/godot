@@ -1,36 +1,38 @@
-/*************************************************************************/
-/*  utilities.cpp                                                        */
-/*************************************************************************/
-/*                       This file is part of:                           */
-/*                           GODOT ENGINE                                */
-/*                      https://godotengine.org                          */
-/*************************************************************************/
-/* Copyright (c) 2007-2022 Juan Linietsky, Ariel Manzur.                 */
-/* Copyright (c) 2014-2022 Godot Engine contributors (cf. AUTHORS.md).   */
-/*                                                                       */
-/* Permission is hereby granted, free of charge, to any person obtaining */
-/* a copy of this software and associated documentation files (the       */
-/* "Software"), to deal in the Software without restriction, including   */
-/* without limitation the rights to use, copy, modify, merge, publish,   */
-/* distribute, sublicense, and/or sell copies of the Software, and to    */
-/* permit persons to whom the Software is furnished to do so, subject to */
-/* the following conditions:                                             */
-/*                                                                       */
-/* The above copyright notice and this permission notice shall be        */
-/* included in all copies or substantial portions of the Software.       */
-/*                                                                       */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,       */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF    */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.*/
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY  */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,  */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE     */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
-/*************************************************************************/
+/**************************************************************************/
+/*  utilities.cpp                                                         */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
 #ifdef GLES3_ENABLED
 
 #include "utilities.h"
+
+#include "../rasterizer_gles3.h"
 #include "config.h"
 #include "light_storage.h"
 #include "material_storage.h"
@@ -67,6 +69,37 @@ Utilities::~Utilities() {
 	for (int i = 0; i < FRAME_COUNT; i++) {
 		glDeleteQueries(max_timestamp_query_elements, frames[i].queries);
 	}
+
+	if (texture_mem_cache) {
+		uint32_t leaked_data_size = 0;
+		for (const KeyValue<GLuint, ResourceAllocation> &E : texture_allocs_cache) {
+#ifdef DEV_ENABLED
+			ERR_PRINT(E.value.name + ": leaked " + itos(E.value.size) + " bytes.");
+#else
+			ERR_PRINT("Texture with GL ID of " + itos(E.key) + ": leaked " + itos(E.value.size) + " bytes.");
+#endif
+			leaked_data_size += E.value.size;
+		}
+		if (leaked_data_size < texture_mem_cache) {
+			ERR_PRINT("Texture cache is not empty. There may be an additional texture leak of " + itos(texture_mem_cache - leaked_data_size) + " bytes.");
+		}
+	}
+
+	if (buffer_mem_cache) {
+		uint32_t leaked_data_size = 0;
+
+		for (const KeyValue<GLuint, ResourceAllocation> &E : buffer_allocs_cache) {
+#ifdef DEV_ENABLED
+			ERR_PRINT(E.value.name + ": leaked " + itos(E.value.size) + " bytes.");
+#else
+			ERR_PRINT("Buffer with GL ID of " + itos(E.key) + ": leaked " + itos(E.value.size) + " bytes.");
+#endif
+			leaked_data_size += E.value.size;
+		}
+		if (leaked_data_size < buffer_mem_cache) {
+			ERR_PRINT("Buffer cache is not empty. There may be an additional buffer leak of " + itos(buffer_mem_cache - leaked_data_size) + " bytes.");
+		}
+	}
 }
 
 Vector<uint8_t> Utilities::buffer_get_data(GLenum p_target, GLuint p_buffer, uint32_t p_buffer_size) {
@@ -82,7 +115,7 @@ Vector<uint8_t> Utilities::buffer_get_data(GLenum p_target, GLuint p_buffer, uin
 #if defined(__EMSCRIPTEN__)
 	{
 		uint8_t *w = ret.ptrw();
-		glGetBufferSubData(p_target, 0, p_buffer_size, w);
+		godot_webgl2_glGetBufferSubData(p_target, 0, p_buffer_size, w);
 	}
 #else
 	void *data = glMapBufferRange(p_target, 0, p_buffer_size, GL_MAP_READ_BIT);
@@ -108,6 +141,10 @@ RS::InstanceType Utilities::get_base_type(RID p_rid) const {
 		return RS::INSTANCE_LIGHT;
 	} else if (GLES3::LightStorage::get_singleton()->owns_lightmap(p_rid)) {
 		return RS::INSTANCE_LIGHTMAP;
+	} else if (GLES3::ParticlesStorage::get_singleton()->owns_particles(p_rid)) {
+		return RS::INSTANCE_PARTICLES;
+	} else if (GLES3::ParticlesStorage::get_singleton()->owns_particles_collision(p_rid)) {
+		return RS::INSTANCE_PARTICLES_COLLISION;
 	}
 	return RS::INSTANCE_NONE;
 }
@@ -143,53 +180,21 @@ bool Utilities::free(RID p_rid) {
 	} else if (GLES3::LightStorage::get_singleton()->owns_lightmap(p_rid)) {
 		GLES3::LightStorage::get_singleton()->lightmap_free(p_rid);
 		return true;
+	} else if (GLES3::ParticlesStorage::get_singleton()->owns_particles(p_rid)) {
+		GLES3::ParticlesStorage::get_singleton()->particles_free(p_rid);
+		return true;
+	} else if (GLES3::ParticlesStorage::get_singleton()->owns_particles_collision(p_rid)) {
+		GLES3::ParticlesStorage::get_singleton()->particles_collision_free(p_rid);
+		return true;
+	} else if (GLES3::ParticlesStorage::get_singleton()->owns_particles_collision_instance(p_rid)) {
+		GLES3::ParticlesStorage::get_singleton()->particles_collision_instance_free(p_rid);
+		return true;
+	} else if (GLES3::MeshStorage::get_singleton()->owns_skeleton(p_rid)) {
+		GLES3::MeshStorage::get_singleton()->skeleton_free(p_rid);
+		return true;
 	} else {
 		return false;
 	}
-	/*
-	else if (reflection_probe_owner.owns(p_rid)) {
-		// delete the texture
-		ReflectionProbe *reflection_probe = reflection_probe_owner.get_or_null(p_rid);
-		reflection_probe->instance_remove_deps();
-
-		reflection_probe_owner.free(p_rid);
-		memdelete(reflection_probe);
-
-		return true;
-	} else if (lightmap_capture_data_owner.owns(p_rid)) {
-		// delete the texture
-		LightmapCapture *lightmap_capture = lightmap_capture_data_owner.get_or_null(p_rid);
-		lightmap_capture->instance_remove_deps();
-
-		lightmap_capture_data_owner.free(p_rid);
-		memdelete(lightmap_capture);
-		return true;
-
-	} else if (canvas_occluder_owner.owns(p_rid)) {
-		CanvasOccluder *co = canvas_occluder_owner.get_or_null(p_rid);
-		if (co->index_id) {
-			glDeleteBuffers(1, &co->index_id);
-		}
-		if (co->vertex_id) {
-			glDeleteBuffers(1, &co->vertex_id);
-		}
-
-		canvas_occluder_owner.free(p_rid);
-		memdelete(co);
-
-		return true;
-
-	} else if (canvas_light_shadow_owner.owns(p_rid)) {
-		CanvasLightShadow *cls = canvas_light_shadow_owner.get_or_null(p_rid);
-		glDeleteFramebuffers(1, &cls->fbo);
-		glDeleteRenderbuffers(1, &cls->depth);
-		glDeleteTextures(1, &cls->distance);
-		canvas_light_shadow_owner.free(p_rid);
-		memdelete(cls);
-
-		return true;
-	}
-	*/
 }
 
 /* DEPENDENCIES */
@@ -207,6 +212,12 @@ void Utilities::base_update_dependency(RID p_base, DependencyTracker *p_instance
 	} else if (LightStorage::get_singleton()->owns_light(p_base)) {
 		Light *l = LightStorage::get_singleton()->get_light(p_base);
 		p_instance->update_dependency(&l->dependency);
+	} else if (ParticlesStorage::get_singleton()->owns_particles(p_base)) {
+		Dependency *dependency = ParticlesStorage::get_singleton()->particles_get_dependency(p_base);
+		p_instance->update_dependency(dependency);
+	} else if (ParticlesStorage::get_singleton()->owns_particles_collision(p_base)) {
+		Dependency *dependency = ParticlesStorage::get_singleton()->particles_collision_get_dependency(p_base);
+		p_instance->update_dependency(dependency);
 	}
 }
 
@@ -244,9 +255,11 @@ void Utilities::capture_timestamps_begin() {
 void Utilities::capture_timestamp(const String &p_name) {
 	ERR_FAIL_COND(frames[frame].timestamp_count >= max_timestamp_query_elements);
 
-#ifdef GLES_OVER_GL
-	glQueryCounter(frames[frame].queries[frames[frame].timestamp_count], GL_TIMESTAMP);
-#endif
+#ifdef GL_API_ENABLED
+	if (RasterizerGLES3::is_gles_over_gl()) {
+		glQueryCounter(frames[frame].queries[frames[frame].timestamp_count], GL_TIMESTAMP);
+	}
+#endif // GL_API_ENABLED
 
 	frames[frame].timestamp_names[frames[frame].timestamp_count] = p_name;
 	frames[frame].timestamp_cpu_values[frames[frame].timestamp_count] = OS::get_singleton()->get_ticks_usec();
@@ -256,13 +269,15 @@ void Utilities::capture_timestamp(const String &p_name) {
 void Utilities::_capture_timestamps_begin() {
 	// frame is incremented at the end of the frame so this gives us the queries for frame - 2. By then they should be ready.
 	if (frames[frame].timestamp_count) {
-#ifdef GLES_OVER_GL
-		for (uint32_t i = 0; i < frames[frame].timestamp_count; i++) {
-			uint64_t temp = 0;
-			glGetQueryObjectui64v(frames[frame].queries[i], GL_QUERY_RESULT, &temp);
-			frames[frame].timestamp_result_values[i] = temp;
+#ifdef GL_API_ENABLED
+		if (RasterizerGLES3::is_gles_over_gl()) {
+			for (uint32_t i = 0; i < frames[frame].timestamp_count; i++) {
+				uint64_t temp = 0;
+				glGetQueryObjectui64v(frames[frame].queries[i], GL_QUERY_RESULT, &temp);
+				frames[frame].timestamp_result_values[i] = temp;
+			}
 		}
-#endif
+#endif // GL_API_ENABLED
 		SWAP(frames[frame].timestamp_names, frames[frame].timestamp_result_names);
 		SWAP(frames[frame].timestamp_cpu_values, frames[frame].timestamp_cpu_result_values);
 	}
@@ -306,7 +321,7 @@ String Utilities::get_captured_timestamp_name(uint32_t p_index) const {
 void Utilities::update_dirty_resources() {
 	MaterialStorage::get_singleton()->_update_global_shader_uniforms();
 	MaterialStorage::get_singleton()->_update_queued_materials();
-	//MeshStorage::get_singleton()->_update_dirty_skeletons();
+	MeshStorage::get_singleton()->_update_dirty_skeletons();
 	MeshStorage::get_singleton()->_update_dirty_multimeshes();
 	TextureStorage::get_singleton()->update_texture_atlas();
 }
@@ -331,6 +346,9 @@ bool Utilities::has_os_feature(const String &p_feature) const {
 	if (p_feature == "bptc") {
 		return config->bptc_supported;
 	}
+	if (p_feature == "astc") {
+		return config->astc_supported;
+	}
 
 	if (p_feature == "etc" || p_feature == "etc2") {
 		return config->etc2_supported;
@@ -343,15 +361,26 @@ void Utilities::update_memory_info() {
 }
 
 uint64_t Utilities::get_rendering_info(RS::RenderingInfo p_info) {
+	if (p_info == RS::RENDERING_INFO_TEXTURE_MEM_USED) {
+		return texture_mem_cache;
+	} else if (p_info == RS::RENDERING_INFO_BUFFER_MEM_USED) {
+		return buffer_mem_cache;
+	} else if (p_info == RS::RENDERING_INFO_VIDEO_MEM_USED) {
+		return texture_mem_cache + buffer_mem_cache;
+	}
 	return 0;
 }
 
 String Utilities::get_video_adapter_name() const {
-	return (const char *)glGetString(GL_RENDERER);
+	const String rendering_device_name = (const char *)glGetString(GL_RENDERER);
+	// NVIDIA suffixes all GPU model names with "/PCIe/SSE2" in OpenGL (but not Vulkan). This isn't necessary to display nowadays, so it can be trimmed.
+	return rendering_device_name.trim_suffix("/PCIe/SSE2");
 }
 
 String Utilities::get_video_adapter_vendor() const {
-	return (const char *)glGetString(GL_VENDOR);
+	const String rendering_device_vendor = (const char *)glGetString(GL_VENDOR);
+	// NVIDIA suffixes its vendor name with " Corporation". This is neither necessary to process nor display.
+	return rendering_device_vendor.trim_suffix(" Corporation");
 }
 
 RenderingDevice::DeviceType Utilities::get_video_adapter_type() const {
